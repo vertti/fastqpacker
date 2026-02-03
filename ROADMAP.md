@@ -1,8 +1,17 @@
 # FastQPacker Roadmap
 
-## Current Status: MVP Complete ✅
+## Current Status: v0.2.0 Released ✅
 
-Working FASTQ compression tool with CLI.
+Fast FASTQ compression with excellent ratio/speed balance.
+
+### Benchmarks (188MB test file)
+
+| Tool      | Size    | Ratio | Compress | Speed     |
+|-----------|---------|-------|----------|-----------|
+| fqpack    | 28.7MB  | 6.54x | 359ms    | 523 MB/s  |
+| pigz      | 35.5MB  | 5.29x | 1534ms   | 123 MB/s  |
+| repaq     | 38.7MB  | 4.84x | 690ms    | 272 MB/s  |
+| repaq+xz  | 23.1MB  | 8.12x | 5979ms   | 31 MB/s   |
 
 ## Completed Milestones
 
@@ -26,30 +35,52 @@ Working FASTQ compression tool with CLI.
 - [x] Wire up: parser → encoders → zstd → output file
 - [x] FQZ file format with magic, version, and block headers
 
+### Milestone 4: Parallelism ✅
+- [x] Add worker pool with errgroup + channels
+- [x] Add sync.Pool for buffer reuse
+- [x] Parallel block compression/decompression
+- [x] -w flag for worker count control
+
 ### Milestone 5: CLI ✅
 - [x] Full CLI with flags: -i, -o, -d, -c, -b
 - [x] stdin/stdout support
 - [x] Compress and decompress modes
 
+### Milestone 6: Format Support ✅
+- [x] Auto-detect Phred+64 (Illumina 1.3-1.7) vs Phred+33 (modern)
+- [x] Normalize quality scores for optimal compression
+- [x] Preserve original encoding on decompression
+
 ## Upcoming Milestones
 
-### Milestone 4: Parallelism (Future)
-- [ ] Add worker pool with errgroup + channels
-- [ ] Add sync.Pool for buffer reuse
-- [ ] Parallel block compression/decompression
-
-### Milestone 6: Polish (Future)
-- [ ] CRC32 integrity per block
-- [ ] Benchmark against gzip/pigz on real Illumina data
-- [ ] Handle edge cases: Phred+64, spaces in headers
-- [ ] Paired-end interleaving support
+### Milestone 7: Integrity & Robustness
+- [ ] CRC32 checksums per block for data integrity verification
+- [ ] Handle edge cases: spaces in headers, unusual characters
 
 ## Future Enhancements
+
+### Performance
+- Parallel decompression (currently single-threaded, ~980ms vs gzip's 143ms)
 - Zstd dictionary training on representative FASTQ files
-- Statistical analysis of sequence patterns
-- Custom lookup tables based on k-mer frequencies
+- Memory-mapped I/O for faster reads
+
+### Compression Ratio
 - Context modeling for quality scores
-- Non-Illumina platform support
+- K-mer frequency analysis for better sequence encoding
+- Exploit pair correlation in R1+R2 files
+
+### Platform Support
+- Non-Illumina platforms (PacBio, Nanopore)
+- Multi-line wrapped sequences
+
+### Low Priority: Paired-end Interleaving
+Paired-end data already works fine with fqpack - just compress R1 and R2 files separately,
+or compress interleaved FASTQ as-is (standard 4-line records work unchanged).
+
+Potential future enhancements:
+- Interleave/deinterleave convenience commands (but seqkit already does this well)
+- Compress R1+R2 together exploiting pair correlation (~5-10% better compression)
+- These add complexity for marginal gains, so deprioritized
 
 ## Usage
 
@@ -66,7 +97,6 @@ fqpack -d < sample.fqz > sample.fq
 ```
 
 ## Known Limitations
-- Single-threaded (parallelism not yet implemented)
 - Only supports Illumina 4-line FASTQ format
 - No support for wrapped sequences (multi-line)
-- Assumes standard Phred+33 quality encoding
+- No support for Solexa+64 encoding (Illumina 1.0-1.2, uses different formula)
