@@ -127,11 +127,12 @@ issues:
         - revive
       text: "dot-imports"
 
-    # Test files can have longer functions
+    # Test files can have longer functions and some duplication
     - path: _test\.go
       linters:
         - gocognit
         - gocyclo
+        - dupl
 
     # Benchmarks don't need t.Parallel
     - path: _test\.go
