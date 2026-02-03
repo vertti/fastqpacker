@@ -155,9 +155,24 @@ if command -v repaq &>/dev/null; then
     repaq_decompress_time=$(benchmark "repaq -d -i \"$REPAQ_OUT\" -o \"$REPAQ_DECOMP\"")
     echo -e "${GREEN}✓ repaq completed${NC}"
     echo "repaq,$repaq_size,$repaq_compress_time,$repaq_decompress_time" >> "$RESULTS_FILE"
+
+    # --- repaq + xz (best compression mode) ---
+    echo -e "${BLUE}--- Testing repaq+xz ---${NC}"
+    REPAQ_XZ_OUT="$TMPDIR/test.rfq.xz"
+    REPAQ_XZ_DECOMP="$TMPDIR/test_repaq_xz.fq"
+
+    # Compress: repaq then xz
+    repaq_xz_compress_time=$(benchmark "repaq -c -i \"$INPUT_FILE\" -o \"$TMPDIR/test_xz.rfq\" && xz -9 -c \"$TMPDIR/test_xz.rfq\" > \"$REPAQ_XZ_OUT\"")
+    repaq -c -i "$INPUT_FILE" -o "$TMPDIR/test_xz.rfq" && xz -9 -c "$TMPDIR/test_xz.rfq" > "$REPAQ_XZ_OUT"
+    repaq_xz_size=$(stat -f%z "$REPAQ_XZ_OUT" 2>/dev/null || stat -c%s "$REPAQ_XZ_OUT" 2>/dev/null)
+
+    # Decompress: xz then repaq
+    repaq_xz_decompress_time=$(benchmark "xz -dc \"$REPAQ_XZ_OUT\" > \"$TMPDIR/test_xz_dec.rfq\" && repaq -d -i \"$TMPDIR/test_xz_dec.rfq\" -o \"$REPAQ_XZ_DECOMP\"")
+    echo -e "${GREEN}✓ repaq+xz completed${NC}"
+    echo "repaq+xz,$repaq_xz_size,$repaq_xz_compress_time,$repaq_xz_decompress_time" >> "$RESULTS_FILE"
 else
     echo -e "${YELLOW}repaq not found, skipping${NC}"
-    echo -e "${YELLOW}Install with: brew install repaq (or from https://github.com/OpenGene/repaq)${NC}"
+    echo -e "${YELLOW}Build from source: https://github.com/OpenGene/repaq${NC}"
 fi
 
 # --- Print results table ---

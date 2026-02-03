@@ -23,7 +23,7 @@ benchmark: build
 			exit 1; \
 		fi \
 	fi
-	./scripts/benchmark.sh testdata/benchmark.fq
+	PATH="$(CURDIR)/bin:$(PATH)" ./scripts/benchmark.sh testdata/benchmark.fq
 
 clean:
 	rm -rf bin/
