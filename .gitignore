@@ -21,3 +21,10 @@ coverage.html
 
 # Claude Code
 .claude/
+
+# Large test files (keep benchmark.fq.gz, ignore decompressed)
+testdata/benchmark.fq
+
+# Original PII data
+*.fastq.gz
+!testdata/benchmark.fq.gz
