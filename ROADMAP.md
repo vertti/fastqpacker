@@ -59,9 +59,11 @@ Fastest FASTQ compression tool — best speed in both directions with excellent 
 
 ## Upcoming Milestones
 
-### Milestone 8: Integrity & Robustness
-- [ ] CRC32 checksums per block for data integrity verification
+### Milestone 8: Robustness
 - [ ] Handle edge cases: spaces in headers, unusual characters
+- [ ] Better error messages for malformed input
+
+Note: Data integrity is already handled — zstd has CRC32 checksums enabled by default.
 
 ## Future Enhancements
 

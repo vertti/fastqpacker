@@ -4,17 +4,17 @@ Blazing fast parallel FASTQ compression. Single binary, no dependencies.
 
 ## Benchmarks
 
-On 179MB of Illumina paired-end reads (500k reads):
+On 188MB of Illumina paired-end reads:
 
-| Tool | Size | Ratio | Compress | Speed |
-|------|------|-------|----------|-------|
-| **fqpack** | **28.7 MB** | **6.54x** | **344 ms** | **546 MB/s** |
-| gzip | 35.5 MB | 5.29x | 11,068 ms | 17 MB/s |
-| pigz | 35.5 MB | 5.29x | 1,471 ms | 128 MB/s |
-| repaq | 38.7 MB | 4.84x | 641 ms | 293 MB/s |
-| repaq+xz | 23.1 MB | 8.12x | 5,802 ms | 32 MB/s |
+| Tool | Size | Ratio | Compress | Decompress | Speed |
+|------|------|-------|----------|------------|-------|
+| **fqpack** | **28.7 MB** | **6.54x** | **292 ms** | **137 ms** | **644 MB/s** |
+| gzip | 35.5 MB | 5.29x | 11,368 ms | 142 ms | 17 MB/s |
+| pigz | 35.5 MB | 5.29x | 1,482 ms | 147 ms | 127 MB/s |
+| repaq | 38.7 MB | 4.84x | 644 ms | 496 ms | 292 MB/s |
+| repaq+xz | 23.1 MB | 8.12x | 5,902 ms | 794 ms | 32 MB/s |
 
-**32x faster than gzip. 23% smaller files.**
+**Fastest compression AND decompression. 23% smaller than gzip.**
 
 ## Installation
 
@@ -53,12 +53,14 @@ fqpack -w 4 -i reads.fq -o reads.fqz
 - **Delta-encoded quality scores**: Adjacent quality scores are similar, deltas compress well
 - **zstd compression**: Modern entropy coding beats gzip's DEFLATE
 - **Parallel block processing**: Scales across all CPU cores
+- **Built-in integrity verification**: CRC32 checksums detect corruption on decompress
 
 ## Limitations
 
 - Illumina 4-line FASTQ format only (no multi-line sequences)
-- Single-end files only (paired-end interleaving planned)
-- No streaming decompression yet (full block buffering)
+- No streaming decompression (full block buffering)
+
+Phred+33 and Phred+64 quality encodings are auto-detected.
 
 ## License
 
