@@ -23,7 +23,7 @@ IIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -50,7 +50,7 @@ $$$$$$$$$$$$$$$$
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -69,7 +69,7 @@ IIIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -87,7 +87,7 @@ func TestCompressDecompress_IlluminaFormat(t *testing.T) {
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -122,7 +122,7 @@ func TestCompressDecompress_LargeBatch(t *testing.T) {
 
 	// Decompress and verify
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, originalData, decompressed.String())
@@ -137,7 +137,7 @@ func TestCompressDecompress_EmptyInput(t *testing.T) {
 	// Depending on implementation choice
 	if err == nil {
 		var decompressed bytes.Buffer
-		err = Decompress(&compressed, &decompressed)
+		err = Decompress(&compressed, &decompressed, nil)
 		require.NoError(t, err)
 		assert.Empty(t, decompressed.String())
 	}
@@ -160,7 +160,7 @@ IIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -194,7 +194,7 @@ func TestCompressDecompress_ParallelMultipleBlocks(t *testing.T) {
 
 	// Decompress and verify
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, originalData, decompressed.String())
@@ -221,7 +221,7 @@ HHHHHHHHHHHHHHHH
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -245,7 +245,7 @@ IIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -294,7 +294,7 @@ func BenchmarkDecompress(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		var decompressed bytes.Buffer
-		_ = Decompress(bytes.NewReader(compressedData), &decompressed)
+		_ = Decompress(bytes.NewReader(compressedData), &decompressed, nil)
 	}
 }
 
@@ -315,7 +315,7 @@ ACGTACGTACGTACGTA
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -344,7 +344,7 @@ TTTTTTTTTTTTTTTT
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
@@ -376,10 +376,73 @@ func TestCompressDecompress_Phred64_LargeBatch(t *testing.T) {
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, originalData, decompressed.String())
+}
+
+func TestDecompressParallel(t *testing.T) {
+	t.Parallel()
+
+	// Generate enough records for multiple blocks
+	var input bytes.Buffer
+	seq := strings.Repeat("ACGT", 38) // 152bp
+	qual := strings.Repeat("I", 152)
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&input, "@SEQ_%d\n%s\n+\n%s\n", i, seq, qual)
+	}
+
+	originalData := input.String()
+
+	// Compress with small block size to force multiple blocks
+	compressOpts := &Options{
+		BlockSize: 100,
+		Workers:   4,
+	}
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(originalData), &compressed, compressOpts)
+	require.NoError(t, err)
+
+	// Decompress with multiple workers
+	decompressOpts := &DecompressOptions{
+		Workers: 4,
+	}
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed, decompressOpts)
+	require.NoError(t, err)
+
+	assert.Equal(t, originalData, decompressed.String())
+}
+
+func TestDecompressSingleWorker(t *testing.T) {
+	t.Parallel()
+
+	input := `@SEQ_1
+ACGTACGTACGTACGT
++
+IIIIIIIIIIIIIIII
+@SEQ_2
+GGGGCCCCAAAATTTT
++
+HHHHHHHHHHHHHHHH
+`
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.NoError(t, err)
+
+	// Decompress with single worker
+	decompressOpts := &DecompressOptions{
+		Workers: 1,
+	}
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed, decompressOpts)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
 }
 
 func TestCompressDecompress_MixedPhredInSameFile(t *testing.T) {
@@ -401,7 +464,7 @@ IIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	var decompressed bytes.Buffer
-	err = Decompress(&compressed, &decompressed)
+	err = Decompress(&compressed, &decompressed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())

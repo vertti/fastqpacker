@@ -141,7 +141,10 @@ func openOutput(path string, toStdout bool) (io.Writer, func(), error) {
 
 func execute(cfg config, input io.Reader, output io.Writer) error {
 	if cfg.decompress {
-		return compress.Decompress(input, output)
+		opts := &compress.DecompressOptions{
+			Workers: cfg.workers,
+		}
+		return compress.Decompress(input, output, opts)
 	}
 
 	opts := &compress.Options{
