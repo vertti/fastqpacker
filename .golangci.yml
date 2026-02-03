@@ -3,19 +3,138 @@ run:
 
 linters:
   enable:
-    - gofmt
-    - goimports
-    - govet
+    # Default/essential
     - errcheck
-    - staticcheck
     - gosimple
+    - govet
     - ineffassign
+    - staticcheck
     - unused
+
+    # Style and formatting
+    - gofmt
+    - gofumpt
+    - goimports
     - misspell
+    - whitespace
+
+    # Bug detection
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - makezero
+    - nilerr
+    - nilnil
+    - noctx
+    - sqlclosecheck
+
+    # Performance
+    - prealloc
+
+    # Code quality
+    - dupl
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - gosec
+    - nakedret
+    - nestif
+    - revive
+    - unconvert
+    - unparam
+
+    # Testing
     - testifylint
+    - tparallel
 
 linters-settings:
-  gofmt:
-    simplify: true
+  gofumpt:
+    extra-rules: true
+
+  gocognit:
+    min-complexity: 20
+
+  gocyclo:
+    min-complexity: 15
+
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+
+  gosec:
+    excludes:
+      - G104 # Audit errors not checked (too noisy for some cases)
+
+  nakedret:
+    max-func-lines: 30
+
+  nestif:
+    min-complexity: 5
+
+  revive:
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: exported
+      - name: if-return
+      - name: increment-decrement
+      - name: var-naming
+      - name: var-declaration
+      - name: package-comments
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: unexported-return
+      - name: indent-error-flow
+      - name: errorf
+      - name: empty-block
+      - name: superfluous-else
+      - name: unused-parameter
+      - name: unreachable-code
+
   testifylint:
     enable-all: true
+
+  dupl:
+    threshold: 100
+
+  prealloc:
+    simple: true
+    for-loops: true
+
+issues:
+  exclude-rules:
+    # Allow dot imports in tests for testify
+    - path: _test\.go
+      linters:
+        - revive
+      text: "dot-imports"
+
+    # Test files can have longer functions
+    - path: _test\.go
+      linters:
+        - gocognit
+        - gocyclo
+
+    # Benchmarks don't need t.Parallel
+    - path: _test\.go
+      text: "benchmark"
+      linters:
+        - tparallel

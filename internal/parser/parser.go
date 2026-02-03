@@ -85,7 +85,7 @@ func (p *Parser) NextBatch(n int) ([]*Record, error) {
 	for i := 0; i < n; i++ {
 		rec, err := p.Next()
 		if err != nil {
-			if err == io.EOF && len(batch) > 0 {
+			if errors.Is(err, io.EOF) && len(batch) > 0 {
 				return batch, nil
 			}
 			return batch, err
