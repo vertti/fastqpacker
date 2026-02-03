@@ -1,0 +1,23 @@
+# Binaries
+bin/
+/fqpack
+*.exe
+
+# Test binaries
+*.test
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Coverage
+coverage.out
+coverage.html
+
+# Claude Code
+.claude/
