@@ -21,6 +21,7 @@ type config struct {
 	outputFile string
 	toStdout   bool
 	blockSize  uint
+	workers    int
 }
 
 func main() {
@@ -64,6 +65,7 @@ func parseFlags() (config, bool) {
 	flag.StringVar(&cfg.outputFile, "o", "", "output file (default: stdout)")
 	flag.BoolVar(&cfg.toStdout, "c", false, "write to stdout (compress mode)")
 	flag.UintVar(&cfg.blockSize, "b", compress.DefaultBlockSize, "records per block")
+	flag.IntVar(&cfg.workers, "w", 0, "compression workers (default: NumCPU)")
 	flag.BoolVar(&showVersion, "version", false, "show version and exit")
 	flag.BoolVar(&showHelp, "h", false, "show help")
 
@@ -142,6 +144,7 @@ func execute(cfg config, input io.Reader, output io.Writer) error {
 
 	opts := &compress.Options{
 		BlockSize: uint32(cfg.blockSize), //nolint:gosec // bounded by flag default
+		Workers:   cfg.workers,
 	}
 	return compress.Compress(input, output, opts)
 }
