@@ -1,6 +1,6 @@
 [tools]
-go = "1.23"
-golangci-lint = "1.62"
+go = "1.25.6"
+golangci-lint = "2.8.0"
 
 # repaq must be built from source:
 # git clone https://github.com/OpenGene/repaq.git && cd repaq && make && cp repaq /path/to/bin/

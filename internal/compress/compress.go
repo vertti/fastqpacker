@@ -2,12 +2,16 @@
 package compress
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 
 	"github.com/klauspost/compress/zstd"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/vertti/fastqpacker/internal/encoder"
 	"github.com/vertti/fastqpacker/internal/format"
@@ -20,6 +24,20 @@ const DefaultBlockSize = 100000
 // Options configures compression behavior.
 type Options struct {
 	BlockSize uint32 // Records per block (default: 100000)
+	Workers   int    // Number of parallel compression workers (default: NumCPU)
+}
+
+// compressJob represents a block to be compressed.
+type compressJob struct {
+	seqNum  int
+	records []*parser.Record
+}
+
+// compressResult represents a compressed block.
+type compressResult struct {
+	seqNum int
+	data   []byte
+	err    error
 }
 
 // Compress reads FASTQ from r and writes compressed data to w.
@@ -29,6 +47,9 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 	}
 	if opts.BlockSize == 0 {
 		opts.BlockSize = DefaultBlockSize
+	}
+	if opts.Workers == 0 {
+		opts.Workers = runtime.NumCPU()
 	}
 
 	// Write file header
@@ -41,14 +62,21 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 		return fmt.Errorf("writing file header: %w", err)
 	}
 
-	// Create zstd encoder (reused for all blocks)
+	// Single worker path (simpler, no goroutine overhead)
+	if opts.Workers == 1 {
+		return compressSingleWorker(r, w, opts)
+	}
+
+	return compressParallel(r, w, opts)
+}
+
+func compressSingleWorker(r io.Reader, w io.Writer, opts *Options) error {
 	zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	if err != nil {
 		return fmt.Errorf("creating zstd encoder: %w", err)
 	}
-	defer zstdEnc.Close()
+	defer zstdEnc.Close() //nolint:errcheck // encoder close during cleanup
 
-	// Parse and compress in batches
 	p := parser.New(r)
 	for {
 		batch, err := p.NextBatch(int(opts.BlockSize))
@@ -59,8 +87,8 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 			break
 		}
 
-		if err := compressBlock(batch, w, zstdEnc); err != nil {
-			return fmt.Errorf("compressing block: %w", err)
+		if blockErr := compressBlock(batch, w, zstdEnc); blockErr != nil {
+			return fmt.Errorf("compressing block: %w", blockErr)
 		}
 
 		if errors.Is(err, io.EOF) {
@@ -71,13 +99,139 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 	return nil
 }
 
+func compressParallel(r io.Reader, w io.Writer, opts *Options) error {
+	jobs := make(chan compressJob, opts.Workers*2)
+	results := make(chan compressResult, opts.Workers*2)
+
+	g, ctx := errgroup.WithContext(ctx())
+
+	// Start workers
+	for range opts.Workers {
+		g.Go(func() error {
+			// Each worker has its own zstd encoder (not thread-safe)
+			zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+			if err != nil {
+				return fmt.Errorf("creating zstd encoder: %w", err)
+			}
+			defer zstdEnc.Close() //nolint:errcheck // encoder close during cleanup
+
+			for job := range jobs {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+
+				data, err := compressBlockToBytes(job.records, zstdEnc)
+				results <- compressResult{seqNum: job.seqNum, data: data, err: err}
+			}
+			return nil
+		})
+	}
+
+	// Producer: parse and dispatch blocks
+	g.Go(func() error {
+		defer close(jobs)
+
+		p := parser.New(r)
+		seqNum := 0
+		for {
+			batch, err := p.NextBatch(int(opts.BlockSize))
+			if err != nil && !errors.Is(err, io.EOF) {
+				return fmt.Errorf("parsing FASTQ: %w", err)
+			}
+			if len(batch) == 0 {
+				break
+			}
+
+			select {
+			case jobs <- compressJob{seqNum: seqNum, records: batch}:
+				seqNum++
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+
+			if errors.Is(err, io.EOF) {
+				break
+			}
+		}
+		return nil
+	})
+
+	// Collector: write results in order
+	var collectorErr error
+	collectorDone := make(chan struct{})
+	go func() {
+		defer close(collectorDone)
+		collectorErr = collectAndWriteResults(results, w)
+	}()
+
+	// Wait for workers and producer
+	workerErr := g.Wait()
+	close(results)
+
+	// Wait for collector
+	<-collectorDone
+
+	if workerErr != nil {
+		return workerErr
+	}
+	return collectorErr
+}
+
+func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
+	pending := make(map[int][]byte)
+	nextSeqNum := 0
+
+	for result := range results {
+		if result.err != nil {
+			return fmt.Errorf("compressing block %d: %w", result.seqNum, result.err)
+		}
+
+		pending[result.seqNum] = result.data
+
+		// Write all sequential results available
+		for {
+			data, ok := pending[nextSeqNum]
+			if !ok {
+				break
+			}
+			if _, err := w.Write(data); err != nil {
+				return fmt.Errorf("writing block %d: %w", nextSeqNum, err)
+			}
+			delete(pending, nextSeqNum)
+			nextSeqNum++
+		}
+	}
+
+	return nil
+}
+
+// ctx returns a background context. Separate function to avoid import cycle.
+func ctx() context.Context {
+	return context.Background()
+}
+
+// compressBlockToBytes compresses a block and returns the serialized bytes.
+func compressBlockToBytes(records []*parser.Record, zstdEnc *zstd.Encoder) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := compressBlock(records, &buf, zstdEnc); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder) error {
-	// Collect all data
-	var allSeqPacked []byte
-	var allNPositions []byte
-	var allSeqLengths []byte
-	var allQuality []byte
-	var allHeaders []byte
+	// Estimate sizes for preallocation (typical 150bp reads)
+	estimatedSeqBytes := len(records) * 40     // ~150bp / 4 bases per byte
+	estimatedQualBytes := len(records) * 150   // 1 byte per base
+	estimatedHeaderBytes := len(records) * 100 // typical header size
+
+	allSeqPacked := make([]byte, 0, estimatedSeqBytes)
+	allNPositions := make([]byte, 0, len(records)*4) // minimum 2 bytes per record
+	allSeqLengths := make([]byte, 0, len(records)*4) // exactly 4 bytes per record
+	allQuality := make([]byte, 0, estimatedQualBytes)
+	allHeaders := make([]byte, 0, estimatedHeaderBytes)
 
 	var originalSeqSize, originalQualSize uint32
 

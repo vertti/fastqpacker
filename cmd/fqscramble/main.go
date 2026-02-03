@@ -79,7 +79,7 @@ func openInput(path string) (io.Reader, func(), error) {
 		return os.Stdin, func() {}, nil
 	}
 
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // CLI tool needs to open user-specified files
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening input: %w", err)
 	}
@@ -87,13 +87,13 @@ func openInput(path string) (io.Reader, func(), error) {
 	if strings.HasSuffix(path, ".gz") {
 		gz, err := gzip.NewReader(f)
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, nil, fmt.Errorf("creating gzip reader: %w", err)
 		}
-		return gz, func() { gz.Close(); f.Close() }, nil
+		return gz, func() { _ = gz.Close(); _ = f.Close() }, nil
 	}
 
-	return f, func() { f.Close() }, nil
+	return f, func() { _ = f.Close() }, nil
 }
 
 func openOutput(path string) (io.Writer, func(), error) {
@@ -101,11 +101,11 @@ func openOutput(path string) (io.Writer, func(), error) {
 		return os.Stdout, func() {}, nil
 	}
 
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec // CLI tool needs to create user-specified files
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating output: %w", err)
 	}
-	return f, func() { f.Close() }, nil
+	return f, func() { _ = f.Close() }, nil
 }
 
 func scramble(r io.Reader, w io.Writer, rng *rand.Rand) error {
@@ -113,7 +113,7 @@ func scramble(r io.Reader, w io.Writer, rng *rand.Rand) error {
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	defer func() { _ = bw.Flush() }()
 
 	lineNum := 0
 	var header, seq, plus, qual string
@@ -133,10 +133,10 @@ func scramble(r io.Reader, w io.Writer, rng *rand.Rand) error {
 			qual = line
 			scrambledSeq := shuffleString(seq, rng)
 
-			fmt.Fprintln(bw, header)
-			fmt.Fprintln(bw, scrambledSeq)
-			fmt.Fprintln(bw, plus)
-			fmt.Fprintln(bw, qual)
+			_, _ = fmt.Fprintln(bw, header)
+			_, _ = fmt.Fprintln(bw, scrambledSeq)
+			_, _ = fmt.Fprintln(bw, plus)
+			_, _ = fmt.Fprintln(bw, qual)
 		}
 
 		lineNum++

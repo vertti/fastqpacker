@@ -1,3 +1,4 @@
+// fqpack compresses and decompresses FASTQ files.
 package main
 
 import (
@@ -115,11 +116,11 @@ func openInput(path string) (io.Reader, func(), error) {
 		return os.Stdin, func() {}, nil
 	}
 
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // CLI tool needs to open user-specified files
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot open input: %w", err)
 	}
-	return f, func() { f.Close() }, nil
+	return f, func() { _ = f.Close() }, nil
 }
 
 func openOutput(path string, toStdout bool) (io.Writer, func(), error) {
@@ -127,11 +128,11 @@ func openOutput(path string, toStdout bool) (io.Writer, func(), error) {
 		return os.Stdout, func() {}, nil
 	}
 
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec // CLI tool needs to create user-specified files
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot create output: %w", err)
 	}
-	return f, func() { f.Close() }, nil
+	return f, func() { _ = f.Close() }, nil
 }
 
 func execute(cfg config, input io.Reader, output io.Writer) error {

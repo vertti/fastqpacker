@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   timeout: 5m
 
@@ -5,16 +7,12 @@ linters:
   enable:
     # Default/essential
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
 
     # Style and formatting
-    - gofmt
-    - gofumpt
-    - goimports
     - misspell
     - whitespace
 
@@ -50,6 +48,16 @@ linters:
     # Testing
     - testifylint
     - tparallel
+
+  exclusions:
+    rules:
+      # Test files can have longer functions, duplication, and repeated strings
+      - path: '(.+)_test\.go'
+        linters:
+          - gocognit
+          - gocyclo
+          - dupl
+          - goconst
 
 linters-settings:
   gofumpt:
@@ -119,23 +127,8 @@ linters-settings:
     simple: true
     for-loops: true
 
-issues:
-  exclude-rules:
-    # Allow dot imports in tests for testify
-    - path: _test\.go
-      linters:
-        - revive
-      text: "dot-imports"
-
-    # Test files can have longer functions and some duplication
-    - path: _test\.go
-      linters:
-        - gocognit
-        - gocyclo
-        - dupl
-
-    # Benchmarks don't need t.Parallel
-    - path: _test\.go
-      text: "benchmark"
-      linters:
-        - tparallel
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports

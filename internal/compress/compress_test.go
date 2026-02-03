@@ -2,6 +2,7 @@ package compress
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -165,6 +166,91 @@ IIIIIIIIIIIIIIII
 	assert.Equal(t, input, decompressed.String())
 }
 
+func TestCompressDecompress_ParallelMultipleBlocks(t *testing.T) {
+	t.Parallel()
+
+	// Generate enough records for multiple blocks
+	var input bytes.Buffer
+	seq := strings.Repeat("ACGT", 38) // 152bp
+	qual := strings.Repeat("I", 152)
+	for i := 0; i < 500; i++ {
+		input.WriteString("@SEQ_" + string(rune('A'+i%26)) + "_" + string(rune('0'+i%10)) + "\n")
+		input.WriteString(seq + "\n")
+		input.WriteString("+\n")
+		input.WriteString(qual + "\n")
+	}
+
+	originalData := input.String()
+
+	// Compress with small block size to force multiple blocks
+	opts := &Options{
+		BlockSize: 100,
+		Workers:   4,
+	}
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(originalData), &compressed, opts)
+	require.NoError(t, err)
+
+	// Decompress and verify
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, originalData, decompressed.String())
+}
+
+func TestCompressDecompress_SingleWorker(t *testing.T) {
+	t.Parallel()
+
+	input := `@SEQ_1
+ACGTACGTACGTACGT
++
+IIIIIIIIIIIIIIII
+@SEQ_2
+GGGGCCCCAAAATTTT
++
+HHHHHHHHHHHHHHHH
+`
+	opts := &Options{
+		Workers: 1,
+	}
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, opts)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
+}
+
+func TestCompressDecompress_ManyWorkersSmallInput(t *testing.T) {
+	t.Parallel()
+
+	// More workers than blocks - should handle gracefully
+	input := `@SEQ_1
+ACGTACGTACGTACGT
++
+IIIIIIIIIIIIIIII
+`
+	opts := &Options{
+		Workers: 16,
+	}
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, opts)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
+}
+
 func BenchmarkCompress(b *testing.B) {
 	// Generate test data
 	var input bytes.Buffer
@@ -209,5 +295,32 @@ func BenchmarkDecompress(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		var decompressed bytes.Buffer
 		_ = Decompress(bytes.NewReader(compressedData), &decompressed)
+	}
+}
+
+func BenchmarkCompressParallel(b *testing.B) {
+	// Generate test data - larger set to benefit from parallelism
+	var input bytes.Buffer
+	seq := strings.Repeat("ACGT", 38) // 152bp
+	qual := strings.Repeat("I", 152)
+	for i := 0; i < 100000; i++ {
+		input.WriteString("@HWI-ST123:4:1101:14346:1976#0/1\n")
+		input.WriteString(seq + "\n")
+		input.WriteString("+\n")
+		input.WriteString(qual + "\n")
+	}
+	data := input.Bytes()
+
+	for _, workers := range []int{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("workers=%d", workers), func(b *testing.B) {
+			opts := &Options{Workers: workers}
+			b.ResetTimer()
+			b.SetBytes(int64(len(data)))
+
+			for i := 0; i < b.N; i++ {
+				var compressed bytes.Buffer
+				_ = Compress(bytes.NewReader(data), &compressed, opts)
+			}
+		})
 	}
 }

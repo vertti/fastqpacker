@@ -53,7 +53,7 @@ func UnpackBases(packed []byte, nPos []uint16, seqLen int) []byte {
 
 	for i := range seqLen {
 		val := (packed[i/4] >> ((i % 4) * 2)) & 0x03
-		seq[i] = bases[val]
+		seq[i] = bases[val] //nolint:gosec // val is masked to 0-3, always valid index
 	}
 
 	// Restore N bases
