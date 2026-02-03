@@ -13,6 +13,7 @@ var Magic = [4]byte{'F', 'Q', 'Z', 0x00}
 // Format flags.
 const (
 	FlagPairedEnd uint8 = 1 << 0 // File contains interleaved paired-end data
+	FlagPhred64   uint8 = 1 << 1 // Quality scores are Phred+64 encoded
 )
 
 // FileHeader is written at the start of every FQZ file.

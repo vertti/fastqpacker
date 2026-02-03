@@ -52,11 +52,31 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 		opts.Workers = runtime.NumCPU()
 	}
 
-	// Write file header
+	// Parse first batch to detect quality encoding
+	p := parser.New(r)
+	firstBatch, err := p.NextBatch(int(opts.BlockSize))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("parsing FASTQ: %w", err)
+	}
+
+	// Detect encoding from first batch
+	qualEncoding := encoder.EncodingPhred33
+	if len(firstBatch) > 0 {
+		qualities := make([][]byte, len(firstBatch))
+		for i, rec := range firstBatch {
+			qualities[i] = rec.Quality
+		}
+		qualEncoding = encoder.DetectEncoding(qualities)
+	}
+
+	// Write file header with encoding flag
 	header := format.FileHeader{
 		Version:   1,
 		BlockSize: opts.BlockSize,
 		Flags:     0,
+	}
+	if qualEncoding == encoder.EncodingPhred64 {
+		header.Flags |= format.FlagPhred64
 	}
 	if err := header.Write(w); err != nil {
 		return fmt.Errorf("writing file header: %w", err)
@@ -64,20 +84,30 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 
 	// Single worker path (simpler, no goroutine overhead)
 	if opts.Workers == 1 {
-		return compressSingleWorker(r, w, opts)
+		return compressSingleWorkerWithBatch(firstBatch, p, w, opts, qualEncoding, errors.Is(err, io.EOF))
 	}
 
-	return compressParallel(r, w, opts)
+	return compressParallelWithBatch(firstBatch, p, w, opts, qualEncoding, errors.Is(err, io.EOF))
 }
 
-func compressSingleWorker(r io.Reader, w io.Writer, opts *Options) error {
+func compressSingleWorkerWithBatch(firstBatch []*parser.Record, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
 	zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	if err != nil {
 		return fmt.Errorf("creating zstd encoder: %w", err)
 	}
 	defer zstdEnc.Close() //nolint:errcheck // encoder close during cleanup
 
-	p := parser.New(r)
+	// Process first batch if present
+	if len(firstBatch) > 0 {
+		if blockErr := compressBlock(firstBatch, w, zstdEnc, qualEncoding); blockErr != nil {
+			return fmt.Errorf("compressing block: %w", blockErr)
+		}
+	}
+
+	if firstBatchEOF {
+		return nil
+	}
+
 	for {
 		batch, err := p.NextBatch(int(opts.BlockSize))
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -87,7 +117,7 @@ func compressSingleWorker(r io.Reader, w io.Writer, opts *Options) error {
 			break
 		}
 
-		if blockErr := compressBlock(batch, w, zstdEnc); blockErr != nil {
+		if blockErr := compressBlock(batch, w, zstdEnc, qualEncoding); blockErr != nil {
 			return fmt.Errorf("compressing block: %w", blockErr)
 		}
 
@@ -99,7 +129,7 @@ func compressSingleWorker(r io.Reader, w io.Writer, opts *Options) error {
 	return nil
 }
 
-func compressParallel(r io.Reader, w io.Writer, opts *Options) error {
+func compressParallelWithBatch(firstBatch []*parser.Record, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
 	jobs := make(chan compressJob, opts.Workers*2)
 	results := make(chan compressResult, opts.Workers*2)
 
@@ -108,54 +138,14 @@ func compressParallel(r io.Reader, w io.Writer, opts *Options) error {
 	// Start workers
 	for range opts.Workers {
 		g.Go(func() error {
-			// Each worker has its own zstd encoder (not thread-safe)
-			zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
-			if err != nil {
-				return fmt.Errorf("creating zstd encoder: %w", err)
-			}
-			defer zstdEnc.Close() //nolint:errcheck // encoder close during cleanup
-
-			for job := range jobs {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				default:
-				}
-
-				data, err := compressBlockToBytes(job.records, zstdEnc)
-				results <- compressResult{seqNum: job.seqNum, data: data, err: err}
-			}
-			return nil
+			return runCompressionWorker(ctx, jobs, results, qualEncoding)
 		})
 	}
 
-	// Producer: parse and dispatch blocks
+	// Producer: dispatch first batch and continue parsing
 	g.Go(func() error {
 		defer close(jobs)
-
-		p := parser.New(r)
-		seqNum := 0
-		for {
-			batch, err := p.NextBatch(int(opts.BlockSize))
-			if err != nil && !errors.Is(err, io.EOF) {
-				return fmt.Errorf("parsing FASTQ: %w", err)
-			}
-			if len(batch) == 0 {
-				break
-			}
-
-			select {
-			case jobs <- compressJob{seqNum: seqNum, records: batch}:
-				seqNum++
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			if errors.Is(err, io.EOF) {
-				break
-			}
-		}
-		return nil
+		return produceCompressJobs(ctx, jobs, firstBatch, p, opts.BlockSize, firstBatchEOF)
 	})
 
 	// Collector: write results in order
@@ -177,6 +167,66 @@ func compressParallel(r io.Reader, w io.Writer, opts *Options) error {
 		return workerErr
 	}
 	return collectorErr
+}
+
+func runCompressionWorker(ctx context.Context, jobs <-chan compressJob, results chan<- compressResult, qualEncoding encoder.QualityEncoding) error {
+	zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		return fmt.Errorf("creating zstd encoder: %w", err)
+	}
+	defer zstdEnc.Close() //nolint:errcheck // encoder close during cleanup
+
+	for job := range jobs {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		data, err := compressBlockToBytes(job.records, zstdEnc, qualEncoding)
+		results <- compressResult{seqNum: job.seqNum, data: data, err: err}
+	}
+	return nil
+}
+
+func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatch []*parser.Record, p *parser.Parser, blockSize uint32, firstBatchEOF bool) error {
+	seqNum := 0
+
+	// Send first batch if present
+	if len(firstBatch) > 0 {
+		select {
+		case jobs <- compressJob{seqNum: seqNum, records: firstBatch}:
+			seqNum++
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if firstBatchEOF {
+		return nil
+	}
+
+	for {
+		batch, err := p.NextBatch(int(blockSize))
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("parsing FASTQ: %w", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+
+		select {
+		case jobs <- compressJob{seqNum: seqNum, records: batch}:
+			seqNum++
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+	return nil
 }
 
 func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
@@ -213,15 +263,15 @@ func ctx() context.Context {
 }
 
 // compressBlockToBytes compresses a block and returns the serialized bytes.
-func compressBlockToBytes(records []*parser.Record, zstdEnc *zstd.Encoder) ([]byte, error) {
+func compressBlockToBytes(records []*parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := compressBlock(records, &buf, zstdEnc); err != nil {
+	if err := compressBlock(records, &buf, zstdEnc, qualEncoding); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder) error {
+func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) error {
 	// Estimate sizes for preallocation (typical 150bp reads)
 	estimatedSeqBytes := len(records) * 40     // ~150bp / 4 bases per byte
 	estimatedQualBytes := len(records) * 150   // 1 byte per base
@@ -255,9 +305,10 @@ func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder)
 
 		originalSeqSize += uint32(len(rec.Sequence)) //nolint:gosec // bounded
 
-		// Encode quality (delta encoding)
+		// Encode quality: normalize to 0-based, then delta encode
 		qualCopy := make([]byte, len(rec.Quality))
 		copy(qualCopy, rec.Quality)
+		encoder.NormalizeQuality(qualCopy, qualEncoding)
 		encoder.DeltaEncode(qualCopy)
 		allQuality = append(allQuality, qualCopy...)
 		originalQualSize += uint32(len(rec.Quality)) //nolint:gosec // bounded
@@ -309,7 +360,12 @@ func Decompress(r io.Reader, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("reading file header: %w", err)
 	}
-	_ = fileHeader // We could use this for validation
+
+	// Determine quality encoding from flags
+	qualEncoding := encoder.EncodingPhred33
+	if fileHeader.Flags&format.FlagPhred64 != 0 {
+		qualEncoding = encoder.EncodingPhred64
+	}
 
 	// Create zstd decoder
 	zstdDec, err := zstd.NewReader(nil)
@@ -328,7 +384,7 @@ func Decompress(r io.Reader, w io.Writer) error {
 			return fmt.Errorf("reading block header: %w", err)
 		}
 
-		if err := decompressBlock(blockHeader, r, w, zstdDec); err != nil {
+		if err := decompressBlock(blockHeader, r, w, zstdDec, qualEncoding); err != nil {
 			return fmt.Errorf("decompressing block: %w", err)
 		}
 	}
@@ -353,15 +409,16 @@ type blockReader struct {
 	headerOffset int
 	nPosOffset   int
 	lengthOffset int
+	qualEncoding encoder.QualityEncoding
 }
 
-func decompressBlock(header *format.BlockHeader, r io.Reader, w io.Writer, zstdDec *zstd.Decoder) error {
+func decompressBlock(header *format.BlockHeader, r io.Reader, w io.Writer, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) error {
 	data, err := readAndDecompressBlock(header, r, zstdDec)
 	if err != nil {
 		return err
 	}
 
-	br := &blockReader{data: data}
+	br := &blockReader{data: data, qualEncoding: qualEncoding}
 	for range header.NumRecords {
 		if err := br.writeRecord(w); err != nil {
 			return err
@@ -492,6 +549,7 @@ func (br *blockReader) readQuality(seqLen int) ([]byte, error) {
 	qual := make([]byte, seqLen)
 	copy(qual, br.data.qualData[br.qualOffset:br.qualOffset+seqLen])
 	encoder.DeltaDecode(qual)
+	encoder.DenormalizeQuality(qual, br.qualEncoding)
 	br.qualOffset += seqLen
 	return qual, nil
 }

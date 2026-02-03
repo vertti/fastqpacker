@@ -298,6 +298,115 @@ func BenchmarkDecompress(b *testing.B) {
 	}
 }
 
+func TestCompressDecompress_Phred64(t *testing.T) {
+	t.Parallel()
+
+	// Create Phred+64 encoded quality string
+	// Phred+64: Q0='@' (64), Q10='J' (74), Q20='T' (84), Q30='^' (94), Q40='h' (104)
+	phred64Qual := "@JT^h@JT^h@JT^h@J" // 17 bases with various qualities
+
+	input := `@SEQ_PHRED64
+ACGTACGTACGTACGTA
++
+` + phred64Qual + `
+`
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
+}
+
+func TestCompressDecompress_Phred64_MultipleRecords(t *testing.T) {
+	t.Parallel()
+
+	// Multiple records with Phred+64 encoding
+	// All qualities >= '@' (64) will be detected as Phred+64
+	input := `@SEQ_1
+AAAAAAAAAAAAAAAA
++
+@@@@@@@@@@@@@@@@
+@SEQ_2
+CCCCCCCCCCCCCCCC
++
+hhhhhhhhhhhhhhhh
+@SEQ_3
+GGGGGGGGGGGGGGGG
++
+TTTTTTTTTTTTTTTT
+`
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
+}
+
+func TestCompressDecompress_Phred64_LargeBatch(t *testing.T) {
+	t.Parallel()
+
+	// Generate many Phred+64 records to test across blocks
+	var input bytes.Buffer
+	seq := strings.Repeat("ACGT", 38) // 152bp
+	// Phred+64 quality: Q35-Q40 range (ASCII 99-104)
+	qual := strings.Repeat("efgh", 38) // 152bp of high-quality Phred+64 scores
+
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&input, "@SEQ_%d\n%s\n+\n%s\n", i, seq, qual)
+	}
+
+	originalData := input.String()
+
+	// Use small block size to force multiple blocks
+	opts := &Options{
+		BlockSize: 100,
+		Workers:   4,
+	}
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(originalData), &compressed, opts)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, originalData, decompressed.String())
+}
+
+func TestCompressDecompress_MixedPhredInSameFile(t *testing.T) {
+	t.Parallel()
+
+	// This tests that detection works correctly when first record has low quality
+	// that clearly identifies it as Phred+33, even if later records could be ambiguous
+	input := `@SEQ_WITH_LOW_QUAL
+ACGTACGTACGTACGT
++
+!!!!!!!!!!!!!!!!
+@SEQ_WITH_HIGH_QUAL
+GGGGGGGGGGGGGGGG
++
+IIIIIIIIIIIIIIII
+`
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
+}
+
 func BenchmarkCompressParallel(b *testing.B) {
 	// Generate test data - larger set to benefit from parallelism
 	var input bytes.Buffer

@@ -199,3 +199,184 @@ func BenchmarkDeltaDecode(b *testing.B) {
 		DeltaDecode(data)
 	}
 }
+
+func TestDetectEncoding(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		quals    [][]byte
+		expected QualityEncoding
+	}{
+		{
+			name:     "Phred+33 low quality",
+			quals:    [][]byte{{'!', '"', '#', '$'}}, // ASCII 33-36
+			expected: EncodingPhred33,
+		},
+		{
+			name:     "Phred+33 typical Illumina 1.8+ with some low qual",
+			quals:    [][]byte{{'5', 'I', 'I', 'I'}}, // ASCII 53-73, includes Q20
+			expected: EncodingPhred33,
+		},
+		{
+			name:     "Phred+33 mixed",
+			quals:    [][]byte{{'!', '5', 'I', '?'}}, // ASCII 33-73 range
+			expected: EncodingPhred33,
+		},
+		{
+			name:     "Phred+64 Illumina 1.3-1.7",
+			quals:    [][]byte{{'@', 'A', 'B', 'h'}}, // ASCII 64-104 (Q0-40)
+			expected: EncodingPhred64,
+		},
+		{
+			name:     "Phred+64 high quality only",
+			quals:    [][]byte{{'e', 'f', 'g', 'h'}}, // ASCII 101-104 (Q37-40)
+			expected: EncodingPhred64,
+		},
+		{
+			name:     "Phred+64 multiple records",
+			quals:    [][]byte{{'h', 'h', 'h'}, {'@', 'A', 'B'}},
+			expected: EncodingPhred64,
+		},
+		{
+			name:     "empty input defaults to Phred+33",
+			quals:    [][]byte{},
+			expected: EncodingPhred33,
+		},
+		{
+			name:     "empty quality string defaults to Phred+33",
+			quals:    [][]byte{{}},
+			expected: EncodingPhred33,
+		},
+		{
+			name:     "ambiguous range (59-63) defaults to Phred+33",
+			quals:    [][]byte{{';', '<', '=', '>'}}, // ASCII 59-62
+			expected: EncodingPhred33,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := DetectEncoding(tt.quals)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestNormalizeQuality(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    []byte
+		encoding QualityEncoding
+		expected []byte
+	}{
+		{
+			name:     "Phred+33 normalization",
+			input:    []byte{'!', '#', 'I'}, // Q0, Q2, Q40
+			encoding: EncodingPhred33,
+			expected: []byte{0, 2, 40},
+		},
+		{
+			name:     "Phred+64 normalization",
+			input:    []byte{'@', 'B', 'h'}, // Q0, Q2, Q40
+			encoding: EncodingPhred64,
+			expected: []byte{0, 2, 40},
+		},
+		{
+			name:     "empty slice",
+			input:    []byte{},
+			encoding: EncodingPhred33,
+			expected: []byte{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := make([]byte, len(tt.input))
+			copy(input, tt.input)
+			NormalizeQuality(input, tt.encoding)
+			assert.Equal(t, tt.expected, input)
+		})
+	}
+}
+
+func TestDenormalizeQuality(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    []byte
+		encoding QualityEncoding
+		expected []byte
+	}{
+		{
+			name:     "Phred+33 denormalization",
+			input:    []byte{0, 2, 40},
+			encoding: EncodingPhred33,
+			expected: []byte{'!', '#', 'I'}, // Q0, Q2, Q40
+		},
+		{
+			name:     "Phred+64 denormalization",
+			input:    []byte{0, 2, 40},
+			encoding: EncodingPhred64,
+			expected: []byte{'@', 'B', 'h'}, // Q0, Q2, Q40
+		},
+		{
+			name:     "empty slice",
+			input:    []byte{},
+			encoding: EncodingPhred33,
+			expected: []byte{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := make([]byte, len(tt.input))
+			copy(input, tt.input)
+			DenormalizeQuality(input, tt.encoding)
+			assert.Equal(t, tt.expected, input)
+		})
+	}
+}
+
+func TestNormalizeDenormalize_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    []byte
+		encoding QualityEncoding
+	}{
+		{
+			name:     "Phred+33 round trip",
+			input:    []byte{'!', '5', 'I', '?', '#'},
+			encoding: EncodingPhred33,
+		},
+		{
+			name:     "Phred+64 round trip",
+			input:    []byte{'@', 'P', 'h', 'Z', 'B'},
+			encoding: EncodingPhred64,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			original := make([]byte, len(tt.input))
+			copy(original, tt.input)
+
+			data := make([]byte, len(tt.input))
+			copy(data, tt.input)
+
+			NormalizeQuality(data, tt.encoding)
+			DenormalizeQuality(data, tt.encoding)
+
+			assert.Equal(t, original, data)
+		})
+	}
+}
