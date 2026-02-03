@@ -1,17 +1,18 @@
 # FastQPacker Roadmap
 
-## Current Status: v0.2.0 Released ✅
+## Current Status: v0.3.0 Released ✅
 
-Fast FASTQ compression with excellent ratio/speed balance.
+Fastest FASTQ compression tool — best speed in both directions with excellent ratio.
 
 ### Benchmarks (188MB test file)
 
-| Tool      | Size    | Ratio | Compress | Speed     |
-|-----------|---------|-------|----------|-----------|
-| fqpack    | 28.7MB  | 6.54x | 359ms    | 523 MB/s  |
-| pigz      | 35.5MB  | 5.29x | 1534ms   | 123 MB/s  |
-| repaq     | 38.7MB  | 4.84x | 690ms    | 272 MB/s  |
-| repaq+xz  | 23.1MB  | 8.12x | 5979ms   | 31 MB/s   |
+| Tool      | Size    | Ratio | Compress | Decompress | Speed     |
+|-----------|---------|-------|----------|------------|-----------|
+| fqpack    | 28.7MB  | 6.54x | **292ms**| **137ms**  | **644 MB/s** |
+| pigz      | 35.5MB  | 5.29x | 1482ms   | 147ms      | 127 MB/s  |
+| gzip      | 35.5MB  | 5.29x | 11368ms  | 142ms      | 17 MB/s   |
+| repaq     | 38.7MB  | 4.84x | 644ms    | 496ms      | 292 MB/s  |
+| repaq+xz  | 23.1MB  | 8.12x | 5902ms   | 794ms      | 32 MB/s   |
 
 ## Completed Milestones
 
@@ -51,16 +52,20 @@ Fast FASTQ compression with excellent ratio/speed balance.
 - [x] Normalize quality scores for optimal compression
 - [x] Preserve original encoding on decompression
 
+### Milestone 7: Parallel Decompression ✅
+- [x] Worker pool for parallel block decompression
+- [x] -w flag controls workers for both compress and decompress
+- [x] 7x speedup (979ms → 137ms), now faster than gzip/pigz
+
 ## Upcoming Milestones
 
-### Milestone 7: Integrity & Robustness
+### Milestone 8: Integrity & Robustness
 - [ ] CRC32 checksums per block for data integrity verification
 - [ ] Handle edge cases: spaces in headers, unusual characters
 
 ## Future Enhancements
 
 ### Performance
-- Parallel decompression (currently single-threaded, ~980ms vs gzip's 143ms)
 - Zstd dictionary training on representative FASTQ files
 - Memory-mapped I/O for faster reads
 
