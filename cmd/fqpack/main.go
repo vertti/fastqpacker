@@ -10,6 +10,8 @@ import (
 	"github.com/vertti/fastqpacker/internal/compress"
 )
 
+var version = "dev"
+
 const (
 	exitSuccess = 0
 	exitError   = 1
@@ -78,7 +80,7 @@ func parseFlags() (config, bool) {
 	}
 
 	if showVersion {
-		fmt.Println("fqpack version 0.1.0")
+		fmt.Printf("fqpack version %s\n", version)
 		return cfg, true
 	}
 
