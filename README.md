@@ -19,15 +19,13 @@ On 188MB of Illumina paired-end reads:
 ## Installation
 
 ```bash
-go install github.com/vertti/fastqpacker/cmd/fqpack@latest
+curl -fsSL https://raw.githubusercontent.com/vertti/fastqpacker/main/install.sh | sh
 ```
 
-Or build from source:
+Or with Go:
 
 ```bash
-git clone https://github.com/vertti/fastqpacker
-cd fastqpacker
-go build -o fqpack ./cmd/fqpack
+go install github.com/vertti/fastqpacker/cmd/fqpack@latest
 ```
 
 ## Usage
