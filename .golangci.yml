@@ -12,7 +12,10 @@ linters:
     - ineffassign
     - unused
     - misspell
+    - testifylint
 
 linters-settings:
   gofmt:
     simplify: true
+  testifylint:
+    enable-all: true
