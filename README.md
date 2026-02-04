@@ -16,11 +16,28 @@ On 188MB of Illumina paired-end reads:
 
 **Fastest compression AND decompression. 23% smaller than gzip.**
 
-### Large file performance (M4 MacBook Pro)
+### Comparison with FQSqueezer paper tools
 
-| File | Compress | Decompress | Ratio |
-|------|----------|------------|-------|
-| 15 GB FASTQ | 10s (1.5 GB/s) | 5s (3 GB/s) | 8.3x |
+Tested on ERR532393_1 (8.9GB) from [FQSqueezer paper](https://www.nature.com/articles/s41598-020-57452-6/tables/1), M4 MacBook Pro:
+
+| Tool | Size | Compress | Decompress |
+|------|------|----------|------------|
+| **fqpack** | **2,825 MB** | **7s** | **3s** |
+| pigz | 3,278 MB | 81s | 12s |
+| zstd | 3,312 MB | 12s | 8s |
+
+Paper results (different hardware, same dataset):
+
+| Tool | Size | Compress | Decompress |
+|------|------|----------|------------|
+| pigz | 3,392 MB | 128s | 54s |
+| 7z | 2,710 MB | 2,438s | 220s |
+| zstd | 3,335 MB | 828s | 35s |
+| DSRC 2 | 2,273 MB | 55s | 56s |
+| Spring | 1,650 MB | 159s | 24s |
+| FQSqueezer | 1,511 MB | 1,409s | 1,501s |
+
+fqpack achieves **16% smaller than pigz** with **12x faster compression**. Only specialized FASTQ compressors (DSRC, Spring, FQSqueezer) achieve better compression, but at significant speed cost.
 
 ## Installation
 

@@ -32,3 +32,6 @@ testdata/benchmark.fq
 
 # Built benchmark tools
 tools/
+
+# Large benchmark datasets
+benchmark_data/
