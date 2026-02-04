@@ -131,6 +131,49 @@ else
     echo "7z not found, skipping (brew install p7zip)"
 fi
 
+# --- repaq ---
+REPAQ="$SCRIPT_DIR/../tools/repaq"
+if [[ -x "$REPAQ" ]] || command -v repaq &>/dev/null; then
+    [[ -x "$REPAQ" ]] || REPAQ="repaq"
+    THREADS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+    echo "Testing repaq (${THREADS} threads)..."
+    COMP_START=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    "$REPAQ" -c -i "$INPUT" -o "$TMPDIR/test.rfq" -t "$THREADS" 2>/dev/null
+    COMP_END=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    COMP_TIME=$(echo "scale=0; ($COMP_END - $COMP_START)" | bc)
+    COMP_SIZE=$(stat -f%z "$TMPDIR/test.rfq" 2>/dev/null || stat -c%s "$TMPDIR/test.rfq" 2>/dev/null)
+
+    DECOMP_START=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    "$REPAQ" -d -i "$TMPDIR/test.rfq" -o "$TMPDIR/test_repaq.fq" -t "$THREADS" 2>/dev/null
+    DECOMP_END=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    DECOMP_TIME=$(echo "scale=0; ($DECOMP_END - $DECOMP_START)" | bc)
+
+    RESULTS+=("repaq,$(format_mb $COMP_SIZE),$COMP_TIME,$DECOMP_TIME")
+    echo "  Size: $(format_mb $COMP_SIZE) MB, Compress: ${COMP_TIME}s, Decompress: ${DECOMP_TIME}s"
+    rm "$TMPDIR/test_repaq.fq"
+
+    # repaq+xz
+    echo "Testing repaq+xz (${THREADS} threads)..."
+    COMP_START=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    xz -9 -T "$THREADS" "$TMPDIR/test.rfq"
+    COMP_END=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    XZ_COMP_TIME=$(echo "scale=0; ($COMP_END - $COMP_START)" | bc)
+    COMP_TIME=$(echo "$COMP_TIME + $XZ_COMP_TIME" | bc)
+    COMP_SIZE=$(stat -f%z "$TMPDIR/test.rfq.xz" 2>/dev/null || stat -c%s "$TMPDIR/test.rfq.xz" 2>/dev/null)
+
+    DECOMP_START=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    xz -d -T "$THREADS" "$TMPDIR/test.rfq.xz"
+    "$REPAQ" -d -i "$TMPDIR/test.rfq" -o "$TMPDIR/test_repaq.fq" -t "$THREADS" 2>/dev/null
+    DECOMP_END=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    DECOMP_TIME=$(echo "scale=0; ($DECOMP_END - $DECOMP_START)" | bc)
+
+    RESULTS+=("repaq+xz,$(format_mb $COMP_SIZE),$COMP_TIME,$DECOMP_TIME")
+    echo "  Size: $(format_mb $COMP_SIZE) MB, Compress: ${COMP_TIME}s, Decompress: ${DECOMP_TIME}s"
+    rm "$TMPDIR/test.rfq" "$TMPDIR/test_repaq.fq"
+else
+    echo "repaq not found, skipping (build from github.com/OpenGene/repaq)"
+fi
+
 # --- Print results table ---
 echo ""
 echo "=== Results ==="
