@@ -1,5 +1,11 @@
 # FastQPacker
 
+[![CI](https://github.com/vertti/fastqpacker/actions/workflows/ci.yml/badge.svg)](https://github.com/vertti/fastqpacker/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/vertti/fastqpacker)](https://goreportcard.com/report/github.com/vertti/fastqpacker)
+[![Release](https://img.shields.io/github/v/release/vertti/fastqpacker)](https://github.com/vertti/fastqpacker/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/vertti/fastqpacker.svg)](https://pkg.go.dev/github.com/vertti/fastqpacker)
+
 The fastest FASTQ compressor available, with better compression than gzip/pigz/zstd while being 10-80x faster. Specialized tools like DSRC or Spring compress smaller, but are 2-6x slower.
 
 Pre-built binaries for macOS and Linux (both ARM and x86_64). Single binary, no dependencies.
