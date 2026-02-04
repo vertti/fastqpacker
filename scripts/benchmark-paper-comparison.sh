@@ -174,6 +174,30 @@ else
     echo "repaq not found, skipping (build from github.com/OpenGene/repaq)"
 fi
 
+# --- DSRC ---
+DSRC="$SCRIPT_DIR/../tools/dsrc"
+if [[ -x "$DSRC" ]] || command -v dsrc &>/dev/null; then
+    [[ -x "$DSRC" ]] || DSRC="dsrc"
+    THREADS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+    echo "Testing DSRC (${THREADS} threads)..."
+    COMP_START=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    "$DSRC" c -m2 -t"$THREADS" "$INPUT" "$TMPDIR/test.dsrc" 2>/dev/null
+    COMP_END=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    COMP_TIME=$(echo "scale=0; ($COMP_END - $COMP_START)" | bc)
+    COMP_SIZE=$(stat -f%z "$TMPDIR/test.dsrc" 2>/dev/null || stat -c%s "$TMPDIR/test.dsrc" 2>/dev/null)
+
+    DECOMP_START=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    "$DSRC" d -t"$THREADS" "$TMPDIR/test.dsrc" "$TMPDIR/test_dsrc.fq" 2>/dev/null
+    DECOMP_END=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
+    DECOMP_TIME=$(echo "scale=0; ($DECOMP_END - $DECOMP_START)" | bc)
+
+    RESULTS+=("DSRC,$(format_mb $COMP_SIZE),$COMP_TIME,$DECOMP_TIME")
+    echo "  Size: $(format_mb $COMP_SIZE) MB, Compress: ${COMP_TIME}s, Decompress: ${DECOMP_TIME}s"
+    rm "$TMPDIR/test.dsrc" "$TMPDIR/test_dsrc.fq"
+else
+    echo "DSRC not found, skipping (build from github.com/refresh-bio/DSRC)"
+fi
+
 # --- Print results table ---
 echo ""
 echo "=== Results ==="

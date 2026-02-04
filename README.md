@@ -1,6 +1,8 @@
 # FastQPacker
 
-Blazing fast parallel FASTQ compression. Single binary, no dependencies.
+The fastest FASTQ compressor available, with better compression than gzip/pigz/zstd while being 10-80x faster. Specialized tools like DSRC or Spring compress smaller, but are 2-6x slower.
+
+Pre-built binaries for macOS and Linux (both ARM and x86_64). Single binary, no dependencies.
 
 ## Benchmarks
 
@@ -22,24 +24,26 @@ Tested on ERR532393_1 (8.9GB) from [FQSqueezer paper](https://www.nature.com/art
 
 | Tool | Size | Compress | Decompress |
 |------|------|----------|------------|
-| **fqpack** | **2,825 MB** | **7s** | **3s** |
-| pigz | 3,278 MB | 81s | 12s |
-| zstd | 3,312 MB | 12s | 8s |
-| 7z | 2,584 MB | 1,486s | 87s |
-| repaq | 5,734 MB | 83s | 27s |
-| repaq+xz | 2,746 MB | 414s | 40s |
+| **fqpack** | **2,825 MB** | **6s** | **3s** |
+| DSRC | 2,150 MB | 12s | 18s |
+| pigz | 3,278 MB | 79s | 12s |
+| zstd | 3,312 MB | 11s | 8s |
+| 7z | 2,584 MB | 1,442s | 83s |
+| repaq | 5,732 MB | 80s | 27s |
+| repaq+xz | 2,761 MB | 388s | 40s |
 
 Paper results (different hardware, same dataset):
 
 | Tool | Size | Compress | Decompress |
 |------|------|----------|------------|
+| DSRC 2 | 2,273 MB | 55s | 56s |
 | pigz | 3,392 MB | 128s | 54s |
 | 7z | 2,710 MB | 2,438s | 220s |
 | zstd | 3,335 MB | 828s | 35s |
 | Spring | 1,650 MB | 159s | 24s |
 | FQSqueezer | 1,511 MB | 1,409s | 1,501s |
 
-fqpack achieves **16% smaller than pigz** with **12x faster compression** and **4x faster decompression**. Only specialized FASTQ compressors (Spring, FQSqueezer) achieve better compression, at significant speed cost.
+fqpack achieves **14% smaller than pigz** with **13x faster compression** and **4x faster decompression**. DSRC achieves better compression but is 2x slower to compress and 6x slower to decompress. Only specialized FASTQ compressors (Spring, FQSqueezer) achieve significantly better compression, at major speed cost.
 
 ## Installation
 
