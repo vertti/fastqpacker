@@ -144,30 +144,33 @@ fi
 
 # --- repaq (if available) ---
 if command -v repaq &>/dev/null; then
-    echo -e "${BLUE}--- Testing repaq ---${NC}"
+    # Get thread count (same as fqpack uses by default)
+    THREADS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
+    echo -e "${BLUE}--- Testing repaq (${THREADS} threads) ---${NC}"
     REPAQ_OUT="$TMPDIR/test.rfq"
     REPAQ_DECOMP="$TMPDIR/test_repaq.fq"
 
-    repaq_compress_time=$(benchmark "repaq -c -i \"$INPUT_FILE\" -o \"$REPAQ_OUT\"")
-    repaq -c -i "$INPUT_FILE" -o "$REPAQ_OUT"
+    repaq_compress_time=$(benchmark "repaq -c -i \"$INPUT_FILE\" -o \"$REPAQ_OUT\" -t $THREADS")
+    repaq -c -i "$INPUT_FILE" -o "$REPAQ_OUT" -t "$THREADS"
     repaq_size=$(stat -f%z "$REPAQ_OUT" 2>/dev/null || stat -c%s "$REPAQ_OUT" 2>/dev/null)
 
-    repaq_decompress_time=$(benchmark "repaq -d -i \"$REPAQ_OUT\" -o \"$REPAQ_DECOMP\"")
+    repaq_decompress_time=$(benchmark "repaq -d -i \"$REPAQ_OUT\" -o \"$REPAQ_DECOMP\" -t $THREADS")
     echo -e "${GREEN}✓ repaq completed${NC}"
     echo "repaq,$repaq_size,$repaq_compress_time,$repaq_decompress_time" >> "$RESULTS_FILE"
 
     # --- repaq + xz (best compression mode) ---
-    echo -e "${BLUE}--- Testing repaq+xz ---${NC}"
+    echo -e "${BLUE}--- Testing repaq+xz (${THREADS} threads) ---${NC}"
     REPAQ_XZ_OUT="$TMPDIR/test.rfq.xz"
     REPAQ_XZ_DECOMP="$TMPDIR/test_repaq_xz.fq"
 
-    # Compress: repaq then xz
-    repaq_xz_compress_time=$(benchmark "repaq -c -i \"$INPUT_FILE\" -o \"$TMPDIR/test_xz.rfq\" && xz -9 -c \"$TMPDIR/test_xz.rfq\" > \"$REPAQ_XZ_OUT\"")
-    repaq -c -i "$INPUT_FILE" -o "$TMPDIR/test_xz.rfq" && xz -9 -c "$TMPDIR/test_xz.rfq" > "$REPAQ_XZ_OUT"
+    # Compress: repaq then xz (xz -T for threads)
+    repaq_xz_compress_time=$(benchmark "repaq -c -i \"$INPUT_FILE\" -o \"$TMPDIR/test_xz.rfq\" -t $THREADS && xz -9 -T $THREADS -c \"$TMPDIR/test_xz.rfq\" > \"$REPAQ_XZ_OUT\"")
+    repaq -c -i "$INPUT_FILE" -o "$TMPDIR/test_xz.rfq" -t "$THREADS" && xz -9 -T "$THREADS" -c "$TMPDIR/test_xz.rfq" > "$REPAQ_XZ_OUT"
     repaq_xz_size=$(stat -f%z "$REPAQ_XZ_OUT" 2>/dev/null || stat -c%s "$REPAQ_XZ_OUT" 2>/dev/null)
 
     # Decompress: xz then repaq
-    repaq_xz_decompress_time=$(benchmark "xz -dc \"$REPAQ_XZ_OUT\" > \"$TMPDIR/test_xz_dec.rfq\" && repaq -d -i \"$TMPDIR/test_xz_dec.rfq\" -o \"$REPAQ_XZ_DECOMP\"")
+    repaq_xz_decompress_time=$(benchmark "xz -dc -T $THREADS \"$REPAQ_XZ_OUT\" > \"$TMPDIR/test_xz_dec.rfq\" && repaq -d -i \"$TMPDIR/test_xz_dec.rfq\" -o \"$REPAQ_XZ_DECOMP\" -t $THREADS")
     echo -e "${GREEN}✓ repaq+xz completed${NC}"
     echo "repaq+xz,$repaq_xz_size,$repaq_xz_compress_time,$repaq_xz_decompress_time" >> "$RESULTS_FILE"
 else

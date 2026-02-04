@@ -29,3 +29,6 @@ testdata/benchmark.fq
 # Original PII data
 *.fastq.gz
 !testdata/benchmark.fq.gz
+
+# Built benchmark tools
+tools/

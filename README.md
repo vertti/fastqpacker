@@ -16,6 +16,12 @@ On 188MB of Illumina paired-end reads:
 
 **Fastest compression AND decompression. 23% smaller than gzip.**
 
+### Large file performance (M4 MacBook Pro)
+
+| File | Compress | Decompress | Ratio |
+|------|----------|------------|-------|
+| 15 GB FASTQ | 10s (1.5 GB/s) | 5s (3 GB/s) | 8.3x |
+
 ## Installation
 
 ```bash
