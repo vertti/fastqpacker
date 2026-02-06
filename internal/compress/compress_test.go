@@ -6,8 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vertti/fastqpacker/internal/encoder"
+	"github.com/vertti/fastqpacker/internal/parser"
 )
 
 func TestCompressDecompress_SingleRecord(t *testing.T) {
@@ -468,6 +472,36 @@ IIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
+}
+
+func BenchmarkCompressBlock(b *testing.B) {
+	// Generate test records directly (bypasses parser + file header overhead)
+	seq := []byte(strings.Repeat("ACGT", 38)) // 152bp
+	qual := []byte(strings.Repeat("I", 152))
+	header := "HWI-ST123:4:1101:14346:1976#0/1"
+
+	const numRecords = 100000
+	records := make([]*parser.Record, numRecords)
+	for i := range records {
+		records[i] = &parser.Record{
+			Header:   header,
+			Sequence: seq,
+			Quality:  qual,
+		}
+	}
+
+	totalBytes := int64(numRecords) * int64(len(header)+len(seq)+len(qual)+4) // +4 for @/+/newlines
+
+	zstdEnc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	defer zstdEnc.Close() //nolint:errcheck
+
+	b.ResetTimer()
+	b.SetBytes(totalBytes)
+
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		_ = compressBlock(records, &buf, zstdEnc, encoder.EncodingPhred33)
+	}
 }
 
 func BenchmarkCompressParallel(b *testing.B) {

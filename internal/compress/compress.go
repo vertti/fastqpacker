@@ -331,6 +331,9 @@ func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder,
 	allHeaders := make([]byte, 0, estimatedHeaderBytes)
 
 	var originalSeqSize, originalQualSize uint32
+	var seqLenBuf [4]byte
+	var headerLenBuf [2]byte
+	nPosScratch := make([]byte, 0, 256) // reusable scratch for N positions per record
 
 	for _, rec := range records {
 		// Encode sequence
@@ -338,33 +341,31 @@ func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder,
 		allSeqPacked = append(allSeqPacked, packed...)
 
 		// Store N positions: count (uint16) + positions (uint16 each)
-		nPosBuf := make([]byte, 2+len(nPos)*2)
-		binary.LittleEndian.PutUint16(nPosBuf[0:2], uint16(len(nPos))) //nolint:gosec // len(nPos) bounded by seq length
+		nPosScratch = nPosScratch[:2+len(nPos)*2]
+		binary.LittleEndian.PutUint16(nPosScratch[0:2], uint16(len(nPos))) //nolint:gosec // len(nPos) bounded by seq length
 		for i, pos := range nPos {
-			binary.LittleEndian.PutUint16(nPosBuf[2+i*2:4+i*2], pos)
+			binary.LittleEndian.PutUint16(nPosScratch[2+i*2:4+i*2], pos)
 		}
-		allNPositions = append(allNPositions, nPosBuf...)
+		allNPositions = append(allNPositions, nPosScratch...)
 
-		// Store sequence length
-		seqLenBuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(seqLenBuf, uint32(len(rec.Sequence))) //nolint:gosec // seq length bounded
-		allSeqLengths = append(allSeqLengths, seqLenBuf...)
+		// Store sequence length (stack array, zero allocs)
+		binary.LittleEndian.PutUint32(seqLenBuf[:], uint32(len(rec.Sequence))) //nolint:gosec // seq length bounded
+		allSeqLengths = append(allSeqLengths, seqLenBuf[:]...)
 
 		originalSeqSize += uint32(len(rec.Sequence)) //nolint:gosec // bounded
 
-		// Encode quality: normalize to 0-based, then delta encode
-		qualCopy := make([]byte, len(rec.Quality))
-		copy(qualCopy, rec.Quality)
-		encoder.NormalizeQuality(qualCopy, qualEncoding)
-		encoder.DeltaEncode(qualCopy)
-		allQuality = append(allQuality, qualCopy...)
+		// Encode quality: append into allQuality, then normalize+delta the tail in-place
+		qualStart := len(allQuality)
+		allQuality = append(allQuality, rec.Quality...)
+		qualSlice := allQuality[qualStart:]
+		encoder.NormalizeQuality(qualSlice, qualEncoding)
+		encoder.DeltaEncode(qualSlice)
 		originalQualSize += uint32(len(rec.Quality)) //nolint:gosec // bounded
 
-		// Store header with length prefix
-		headerBuf := make([]byte, 2+len(rec.Header))
-		binary.LittleEndian.PutUint16(headerBuf[0:2], uint16(len(rec.Header))) //nolint:gosec // header length bounded
-		copy(headerBuf[2:], rec.Header)
-		allHeaders = append(allHeaders, headerBuf...)
+		// Store header with length prefix (no allocation)
+		binary.LittleEndian.PutUint16(headerLenBuf[:], uint16(len(rec.Header))) //nolint:gosec // header length bounded
+		allHeaders = append(allHeaders, headerLenBuf[:]...)
+		allHeaders = append(allHeaders, rec.Header...)
 	}
 
 	// Compress each stream with zstd
