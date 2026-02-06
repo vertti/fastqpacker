@@ -10,9 +10,36 @@ import (
 
 // Record represents a single FASTQ record.
 type Record struct {
-	Header   string // Header line without the leading '@'
+	Header   []byte // Header line without the leading '@'
 	Sequence []byte // DNA sequence (A, C, G, T, N)
 	Quality  []byte // Quality scores (Phred+33 encoded)
+}
+
+// RecordBatch is a reusable batch of records backed by contiguous memory.
+// Use ReadBatch to fill it and Reset to prepare for reuse.
+type RecordBatch struct {
+	Records []Record
+	dataBuf []byte // backing buffer for all record data (header + seq + qual)
+	n       int    // number of valid records in this batch
+}
+
+// NewRecordBatch creates a batch pre-allocated for up to maxRecords.
+func NewRecordBatch(maxRecords int) *RecordBatch {
+	return &RecordBatch{
+		Records: make([]Record, maxRecords),
+		dataBuf: make([]byte, 0, maxRecords*450), // ~150 header + 150 seq + 150 qual
+	}
+}
+
+// Reset prepares the batch for reuse without reallocating.
+func (b *RecordBatch) Reset() {
+	b.n = 0
+	b.dataBuf = b.dataBuf[:0]
+}
+
+// Len returns the number of valid records in the batch.
+func (b *RecordBatch) Len() int {
+	return b.n
 }
 
 // Parser reads FASTQ records from an input stream.
@@ -42,7 +69,7 @@ func (p *Parser) Next() (*Record, error) {
 	if len(line) == 0 || line[0] != '@' {
 		return nil, errors.New("invalid FASTQ: header line must start with @")
 	}
-	rec.Header = string(line[1:]) // strip leading @
+	rec.Header = append(rec.Header[:0], line[1:]...) // strip leading @
 
 	// Line 2: Sequence
 	line, err = p.readLine()
@@ -114,7 +141,9 @@ func (p *Parser) nextInto(rec *Record, dataBuf []byte) ([]byte, error) {
 	if len(line) == 0 || line[0] != '@' {
 		return dataBuf, errors.New("invalid FASTQ: header line must start with @")
 	}
-	rec.Header = string(line[1:])
+	hdrStart := len(dataBuf)
+	dataBuf = append(dataBuf, line[1:]...)
+	rec.Header = dataBuf[hdrStart:len(dataBuf):len(dataBuf)]
 
 	// Line 2: Sequence — carve from backing buffer
 	line, err = p.readLine()
@@ -148,6 +177,27 @@ func (p *Parser) nextInto(rec *Record, dataBuf []byte) ([]byte, error) {
 	}
 
 	return dataBuf, nil
+}
+
+// ReadBatch reads up to len(batch.Records) records into a pre-allocated RecordBatch.
+// Returns io.EOF when no more records are available.
+func (p *Parser) ReadBatch(batch *RecordBatch) error {
+	batch.Reset()
+	maxRecords := len(batch.Records)
+
+	for i := 0; i < maxRecords; i++ {
+		var err error
+		batch.dataBuf, err = p.nextInto(&batch.Records[i], batch.dataBuf)
+		if err != nil {
+			if errors.Is(err, io.EOF) && i > 0 {
+				batch.n = i
+				return nil
+			}
+			return err
+		}
+		batch.n = i + 1
+	}
+	return nil
 }
 
 // readLine reads a line from the input, stripping the newline.
