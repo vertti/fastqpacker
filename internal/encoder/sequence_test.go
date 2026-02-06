@@ -170,6 +170,109 @@ func BenchmarkUnpackBases(b *testing.B) {
 	}
 }
 
+func TestAppendPackedBases_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	sequences := []string{
+		"ACGTACGTACGTACGT",
+		"ACGTNNNNACGTNNNN",
+		"N",
+		"A",
+		"ACGT",  // exactly 4 bases
+		"ACGTA", // 5 bases (remainder)
+	}
+
+	for _, seq := range sequences {
+		t.Run(seq[:min(10, len(seq))], func(t *testing.T) {
+			t.Parallel()
+
+			// Compare AppendPackedBases output with PackBases
+			origPacked, origNPos := PackBases([]byte(seq))
+
+			var nPos []uint16
+			dst := AppendPackedBases(nil, []byte(seq), &nPos)
+			assert.Equal(t, origPacked, dst)
+			assert.Equal(t, origNPos, nPos)
+
+			// Round-trip via AppendUnpackBases
+			unpacked := AppendUnpackBases(nil, dst, nPos, len(seq))
+			assert.Equal(t, seq, string(unpacked))
+		})
+	}
+}
+
+func TestAppendPackedBases_ReuseBuffer(t *testing.T) {
+	t.Parallel()
+
+	seq1 := []byte("ACGTACGT")
+	seq2 := []byte("TTTTNNNN")
+
+	// Pack two sequences into the same buffer
+	var nPos1, nPos2 []uint16
+	dst := AppendPackedBases(nil, seq1, &nPos1)
+	offset := len(dst)
+	dst = AppendPackedBases(dst, seq2, &nPos2)
+
+	// Verify first sequence
+	unpacked1 := AppendUnpackBases(nil, dst[:offset], nPos1, len(seq1))
+	assert.Equal(t, "ACGTACGT", string(unpacked1))
+
+	// Verify second sequence
+	unpacked2 := AppendUnpackBases(nil, dst[offset:], nPos2, len(seq2))
+	assert.Equal(t, "TTTTNNNN", string(unpacked2))
+}
+
+func TestAppendUnpackBases_ReuseBuffer(t *testing.T) {
+	t.Parallel()
+
+	packed, nPos := PackBases([]byte("ACGTACGT"))
+
+	// Append to existing data
+	prefix := []byte("PREFIX")
+	result := AppendUnpackBases(prefix, packed, nPos, 8)
+
+	assert.Equal(t, "PREFIXACGTACGT", string(result))
+}
+
+func TestAppendPackedBases_Empty(t *testing.T) {
+	t.Parallel()
+
+	var nPos []uint16
+	dst := AppendPackedBases(nil, nil, &nPos)
+	assert.Nil(t, dst)
+	assert.Nil(t, nPos)
+}
+
+func BenchmarkAppendPackBases(b *testing.B) {
+	seq := []byte("ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")
+	dst := make([]byte, 0, 64)
+	var nPos []uint16
+
+	b.ResetTimer()
+	b.SetBytes(int64(len(seq)))
+
+	for i := 0; i < b.N; i++ {
+		dst = dst[:0]
+		nPos = nPos[:0]
+		AppendPackedBases(dst, seq, &nPos)
+	}
+}
+
+func BenchmarkAppendUnpackBases(b *testing.B) {
+	seq := []byte("ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")
+	packed, nPos := PackBases(seq)
+	seqLen := len(seq)
+	dst := make([]byte, 0, seqLen)
+
+	b.ResetTimer()
+	b.SetBytes(int64(seqLen))
+
+	for i := 0; i < b.N; i++ {
+		dst = dst[:0]
+		AppendUnpackBases(dst, packed, nPos, seqLen)
+	}
+}
+
 func TestPackBasesWithPool(t *testing.T) {
 	t.Parallel()
 

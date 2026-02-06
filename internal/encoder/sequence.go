@@ -118,3 +118,106 @@ func UnpackBases(packed []byte, nPos []uint16, seqLen int) []byte {
 
 	return seq
 }
+
+// AppendPackedBases appends 2-bit encoded bases to dst, returning the
+// updated slice. Like PackBases but avoids allocation when dst has capacity.
+func AppendPackedBases(dst []byte, seq []byte, nPos *[]uint16) []byte {
+	n := len(seq)
+	if n == 0 {
+		return dst
+	}
+
+	packedLen := (n + 3) >> 2
+
+	// Ensure capacity
+	if cap(dst)-len(dst) < packedLen {
+		grown := make([]byte, len(dst), len(dst)+packedLen)
+		copy(grown, dst)
+		dst = grown
+	}
+	start := len(dst)
+	dst = dst[:start+packedLen]
+	packed := dst[start:]
+
+	// Process 4 bases at a time (one full output byte per iteration)
+	fullBytes := n >> 2
+	for i := 0; i < fullBytes; i++ {
+		base := i << 2
+		packed[i] = baseLookup[seq[base]] |
+			(baseLookup[seq[base+1]] << 2) |
+			(baseLookup[seq[base+2]] << 4) |
+			(baseLookup[seq[base+3]] << 6)
+	}
+
+	// Handle remaining 1-3 bases
+	remaining := n & 3
+	if remaining > 0 {
+		base := fullBytes << 2
+		var b byte
+		for j := 0; j < remaining; j++ {
+			b |= baseLookup[seq[base+j]] << (j << 1)
+		}
+		packed[fullBytes] = b
+	}
+
+	// Separate pass for N detection
+	limit := n
+	if limit > MaxSequenceLength {
+		limit = MaxSequenceLength
+	}
+	for i := 0; i < limit; i++ {
+		if isNBase[seq[i]] != 0 {
+			*nPos = append(*nPos, uint16(i)) //nolint:gosec // bounds checked above
+		}
+	}
+
+	return dst
+}
+
+// AppendUnpackBases appends unpacked DNA bases to dst, returning the
+// updated slice. Like UnpackBases but avoids allocation when dst has capacity.
+func AppendUnpackBases(dst []byte, packed []byte, nPos []uint16, seqLen int) []byte {
+	if seqLen == 0 {
+		return dst
+	}
+
+	// Ensure capacity
+	if cap(dst)-len(dst) < seqLen {
+		grown := make([]byte, len(dst), len(dst)+seqLen)
+		copy(grown, dst)
+		dst = grown
+	}
+	start := len(dst)
+	dst = dst[:start+seqLen]
+	seq := dst[start:]
+
+	bases := [4]byte{'A', 'C', 'G', 'T'}
+
+	// Process 4 bases at a time
+	fullBytes := seqLen >> 2
+	for i := 0; i < fullBytes; i++ {
+		b := packed[i]
+		base := i << 2
+		seq[base] = bases[b&0x03]
+		seq[base+1] = bases[(b>>2)&0x03]
+		seq[base+2] = bases[(b>>4)&0x03]
+		seq[base+3] = bases[(b>>6)&0x03]
+	}
+
+	// Handle remaining 1-3 bases
+	remaining := seqLen & 3
+	if remaining > 0 {
+		b := packed[fullBytes]
+		base := fullBytes << 2
+		for j := 0; j < remaining; j++ {
+			seq[base+j] = bases[(b>>(j<<1))&0x03]
+		}
+	}
+
+	// Restore N bases
+	for _, pos := range nPos {
+		seq[pos] = 'N'
+	}
+
+	return dst
+}
