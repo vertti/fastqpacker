@@ -16,7 +16,7 @@ Tested on ERR532393_1 (8.9GB Illumina reads), M4 MacBook Pro:
 
 | Tool | Size | Ratio | Compress | Decompress | Speed |
 |------|------|-------|----------|------------|-------|
-| **fqpack** | **2,825 MB** | **3.2x** | **4.6s** | **3s** | **1,991 MB/s** |
+| **fqpack** | **2,826 MB** | **3.2x** | **3.3s** | **3s** | **2,922 MB/s** |
 | DSRC | 2,150 MB | 4.1x | 12s | 18s | 742 MB/s |
 | zstd | 3,312 MB | 2.7x | 11s | 8s | 809 MB/s |
 | pigz | 3,278 MB | 2.7x | 79s | 12s | 113 MB/s |
@@ -24,7 +24,7 @@ Tested on ERR532393_1 (8.9GB Illumina reads), M4 MacBook Pro:
 | repaq+xz | 2,761 MB | 3.2x | 388s | 40s | 23 MB/s |
 | 7z | 2,584 MB | 3.4x | 1,442s | 83s | 6 MB/s |
 
-fqpack is **14% smaller than pigz** with **17x faster compression** and **4x faster decompression**. DSRC compresses 24% smaller but is 2.6x slower to compress and 6x slower to decompress. FQSqueezer achieves the best known compression (1,511 MB, 5.9x ratio) but is ~100x slower.
+fqpack is **14% smaller than pigz** with **24x faster compression** and **4x faster decompression**. DSRC compresses 24% smaller but is 3.6x slower to compress and 6x slower to decompress. FQSqueezer achieves the best known compression (1,511 MB, 5.9x ratio) but is ~100x slower.
 
 ## Installation
 
@@ -62,13 +62,12 @@ fqpack -w 4 -i reads.fq -o reads.fqz
 - **zstd compression**: Modern entropy coding beats gzip's DEFLATE
 - **Parallel block processing**: Scales across all CPU cores
 - **Built-in integrity verification**: CRC32 checksums detect corruption on decompress
+- **Auto-detected quality encoding**: Phred+33 and Phred+64 handled transparently
 
 ## Limitations
 
 - Illumina 4-line FASTQ format only (no multi-line sequences)
 - No streaming decompression (full block buffering)
-
-Phred+33 and Phred+64 quality encodings are auto-detected.
 
 ## License
 
