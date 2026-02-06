@@ -1,7 +1,12 @@
-.PHONY: build test lint bench benchmark clean
+.PHONY: build build-pgo test lint bench benchmark clean
 
 build:
 	go build -o bin/fqpack ./cmd/fqpack
+	go build -o bin/fqscramble ./cmd/fqscramble
+
+build-pgo:
+	go test -bench=BenchmarkCompressParallel/workers=8 -benchtime=5s -cpuprofile=cmd/fqpack/default.pgo ./internal/compress/
+	go build -pgo=cmd/fqpack/default.pgo -o bin/fqpack ./cmd/fqpack
 	go build -o bin/fqscramble ./cmd/fqscramble
 
 test:
