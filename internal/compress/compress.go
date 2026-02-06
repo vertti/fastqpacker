@@ -646,16 +646,23 @@ func decompressJobToBytes(job decompressJob, zstdDec *zstd.Decoder, qualEncoding
 		lengthData: lengthData,
 	}
 
-	// Format into FASTQ
-	var buf bytes.Buffer
+	// Format into FASTQ using pooled buffer
+	buf := decompBufPool.Get().(*bytes.Buffer) //nolint:errcheck // pool always returns *bytes.Buffer
+	buf.Reset()
+
 	br := &blockReader{data: data, qualEncoding: qualEncoding}
 	for range job.header.NumRecords {
-		if err := br.writeRecord(&buf); err != nil {
+		if err := br.writeRecord(buf); err != nil {
+			decompBufPool.Put(buf)
 			return nil, err
 		}
 	}
 
-	return buf.Bytes(), nil
+	// Copy output so the pooled buffer can be reused
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	decompBufPool.Put(buf)
+	return out, nil
 }
 
 // blockData holds decompressed data for a block.
@@ -676,6 +683,15 @@ type blockReader struct {
 	nPosOffset   int
 	lengthOffset int
 	qualEncoding encoder.QualityEncoding
+	nPosBuf      []uint16 // reusable N position buffer
+}
+
+var decompBufPool = sync.Pool{
+	New: func() any {
+		b := &bytes.Buffer{}
+		b.Grow(1 << 20) // 1MB initial
+		return b
+	},
 }
 
 func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Writer, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) error {
@@ -684,14 +700,20 @@ func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Write
 		return err
 	}
 
+	buf := decompBufPool.Get().(*bytes.Buffer) //nolint:errcheck // pool always returns *bytes.Buffer
+	buf.Reset()
+
 	br := &blockReader{data: data, qualEncoding: qualEncoding}
 	for range header.NumRecords {
-		if err := br.writeRecord(w); err != nil {
+		if err := br.writeRecord(buf); err != nil {
+			decompBufPool.Put(buf)
 			return err
 		}
 	}
 
-	return nil
+	_, err = w.Write(buf.Bytes())
+	decompBufPool.Put(buf)
+	return err
 }
 
 func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zstd.Decoder) (*blockData, error) {
@@ -741,7 +763,7 @@ func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zs
 	}, nil
 }
 
-func (br *blockReader) writeRecord(w io.Writer) error {
+func (br *blockReader) writeRecord(buf *bytes.Buffer) error {
 	seqLen, err := br.readSeqLength()
 	if err != nil {
 		return err
@@ -752,48 +774,72 @@ func (br *blockReader) writeRecord(w io.Writer) error {
 		return err
 	}
 
-	seq, err := br.readSequence(seqLen, nPos)
-	if err != nil {
+	// Write '@' + header
+	if err := br.appendHeader(buf); err != nil {
 		return err
 	}
 
-	qual, err := br.readQuality(seqLen)
-	if err != nil {
+	// Append sequence directly into buffer using AppendUnpackBases
+	if err := br.appendSequence(buf, seqLen, nPos); err != nil {
 		return err
 	}
 
-	recHeader, err := br.readHeader()
-	if err != nil {
+	// Write "+\n"
+	buf.WriteByte('+')
+	buf.WriteByte('\n')
+
+	// Append quality with in-place delta decode (safe: qualData is per-block)
+	if err := br.appendQuality(buf, seqLen); err != nil {
 		return err
 	}
 
-	// Write FASTQ record using direct writes instead of fmt.Fprintf
-	// to avoid format string parsing and interface dispatch per record.
-	if bw, ok := w.(*bytes.Buffer); ok {
-		// Fast path for bytes.Buffer (parallel decompression)
-		bw.WriteByte('@')
-		bw.Write(recHeader)
-		bw.WriteByte('\n')
-		bw.Write(seq)
-		bw.WriteByte('\n')
-		bw.WriteByte('+')
-		bw.WriteByte('\n')
-		bw.Write(qual)
-		bw.WriteByte('\n')
-		return nil
+	return nil
+}
+
+func (br *blockReader) appendHeader(buf *bytes.Buffer) error {
+	if br.headerOffset+2 > len(br.data.headerData) {
+		return errors.New("truncated header data")
 	}
-	// General io.Writer path — build record into scratch buffer
-	needed := 1 + len(recHeader) + 1 + len(seq) + 3 + len(qual) + 1
-	buf := make([]byte, 0, needed)
-	buf = append(buf, '@')
-	buf = append(buf, recHeader...)
-	buf = append(buf, '\n')
-	buf = append(buf, seq...)
-	buf = append(buf, '\n', '+', '\n')
-	buf = append(buf, qual...)
-	buf = append(buf, '\n')
-	_, err = w.Write(buf)
-	return err
+	headerLen := int(binary.LittleEndian.Uint16(br.data.headerData[br.headerOffset : br.headerOffset+2]))
+	br.headerOffset += 2
+
+	if br.headerOffset+headerLen > len(br.data.headerData) {
+		return errors.New("truncated header data")
+	}
+	buf.WriteByte('@')
+	buf.Write(br.data.headerData[br.headerOffset : br.headerOffset+headerLen])
+	buf.WriteByte('\n')
+	br.headerOffset += headerLen
+	return nil
+}
+
+func (br *blockReader) appendSequence(buf *bytes.Buffer, seqLen int, nPos []uint16) error {
+	packedLen := (seqLen + 3) / 4
+	if br.seqOffset+packedLen > len(br.data.seqData) {
+		return errors.New("truncated sequence data")
+	}
+	// Use AvailableBuffer + AppendUnpackBases for zero-copy into buffer
+	avail := buf.AvailableBuffer()
+	avail = encoder.AppendUnpackBases(avail, br.data.seqData[br.seqOffset:br.seqOffset+packedLen], nPos, seqLen)
+	avail = append(avail, '\n')
+	buf.Write(avail)
+	br.seqOffset += packedLen
+	return nil
+}
+
+func (br *blockReader) appendQuality(buf *bytes.Buffer, seqLen int) error {
+	if br.qualOffset+seqLen > len(br.data.qualData) {
+		return errors.New("truncated quality data")
+	}
+	// Delta decode + denormalize in-place on the block's qualData
+	// (safe: qualData is only used once per record, offsets advance past it)
+	qual := br.data.qualData[br.qualOffset : br.qualOffset+seqLen]
+	encoder.DeltaDecode(qual)
+	encoder.DenormalizeQuality(qual, br.qualEncoding)
+	buf.Write(qual)
+	buf.WriteByte('\n')
+	br.qualOffset += seqLen
+	return nil
 }
 
 func (br *blockReader) readSeqLength() (int, error) {
@@ -812,50 +858,20 @@ func (br *blockReader) readNPositions() ([]uint16, error) {
 	nCount := int(binary.LittleEndian.Uint16(br.data.nPosData[br.nPosOffset : br.nPosOffset+2]))
 	br.nPosOffset += 2
 
-	nPos := make([]uint16, nCount)
+	// Reuse nPosBuf to avoid per-record allocation
+	if nCount == 0 {
+		return nil, nil
+	}
+	if cap(br.nPosBuf) < nCount {
+		br.nPosBuf = make([]uint16, nCount)
+	}
+	br.nPosBuf = br.nPosBuf[:nCount]
 	for j := range nCount {
 		if br.nPosOffset+2 > len(br.data.nPosData) {
 			return nil, errors.New("truncated N position data")
 		}
-		nPos[j] = binary.LittleEndian.Uint16(br.data.nPosData[br.nPosOffset : br.nPosOffset+2])
+		br.nPosBuf[j] = binary.LittleEndian.Uint16(br.data.nPosData[br.nPosOffset : br.nPosOffset+2])
 		br.nPosOffset += 2
 	}
-	return nPos, nil
-}
-
-func (br *blockReader) readSequence(seqLen int, nPos []uint16) ([]byte, error) {
-	packedLen := (seqLen + 3) / 4
-	if br.seqOffset+packedLen > len(br.data.seqData) {
-		return nil, errors.New("truncated sequence data")
-	}
-	seq := encoder.UnpackBases(br.data.seqData[br.seqOffset:br.seqOffset+packedLen], nPos, seqLen)
-	br.seqOffset += packedLen
-	return seq, nil
-}
-
-func (br *blockReader) readQuality(seqLen int) ([]byte, error) {
-	if br.qualOffset+seqLen > len(br.data.qualData) {
-		return nil, errors.New("truncated quality data")
-	}
-	qual := make([]byte, seqLen)
-	copy(qual, br.data.qualData[br.qualOffset:br.qualOffset+seqLen])
-	encoder.DeltaDecode(qual)
-	encoder.DenormalizeQuality(qual, br.qualEncoding)
-	br.qualOffset += seqLen
-	return qual, nil
-}
-
-func (br *blockReader) readHeader() ([]byte, error) {
-	if br.headerOffset+2 > len(br.data.headerData) {
-		return nil, errors.New("truncated header data")
-	}
-	headerLen := int(binary.LittleEndian.Uint16(br.data.headerData[br.headerOffset : br.headerOffset+2]))
-	br.headerOffset += 2
-
-	if br.headerOffset+headerLen > len(br.data.headerData) {
-		return nil, errors.New("truncated header data")
-	}
-	recHeader := br.data.headerData[br.headerOffset : br.headerOffset+headerLen]
-	br.headerOffset += headerLen
-	return recHeader, nil
+	return br.nPosBuf, nil
 }
