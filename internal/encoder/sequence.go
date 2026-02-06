@@ -1,6 +1,8 @@
 // Package encoder provides encoding functions for FASTQ components.
 package encoder
 
+import "slices"
+
 // MaxSequenceLength is the maximum supported sequence length.
 // Sequences longer than this will be truncated for N position tracking.
 const MaxSequenceLength = 1 << 16 // 65536
@@ -129,14 +131,8 @@ func AppendPackedBases(dst []byte, seq []byte, nPos *[]uint16) []byte {
 
 	packedLen := (n + 3) >> 2
 
-	// Ensure capacity
-	if cap(dst)-len(dst) < packedLen {
-		grown := make([]byte, len(dst), len(dst)+packedLen)
-		copy(grown, dst)
-		dst = grown
-	}
 	start := len(dst)
-	dst = dst[:start+packedLen]
+	dst = slices.Grow(dst, packedLen)[:start+packedLen]
 	packed := dst[start:]
 
 	// Process 4 bases at a time (one full output byte per iteration)
@@ -181,14 +177,8 @@ func AppendUnpackBases(dst []byte, packed []byte, nPos []uint16, seqLen int) []b
 		return dst
 	}
 
-	// Ensure capacity
-	if cap(dst)-len(dst) < seqLen {
-		grown := make([]byte, len(dst), len(dst)+seqLen)
-		copy(grown, dst)
-		dst = grown
-	}
 	start := len(dst)
-	dst = dst[:start+seqLen]
+	dst = slices.Grow(dst, seqLen)[:start+seqLen]
 	seq := dst[start:]
 
 	bases := [4]byte{'A', 'C', 'G', 'T'}

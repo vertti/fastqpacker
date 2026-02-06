@@ -481,9 +481,9 @@ func BenchmarkCompressBlock(b *testing.B) {
 	header := []byte("HWI-ST123:4:1101:14346:1976#0/1")
 
 	const numRecords = 100000
-	records := make([]*parser.Record, numRecords)
+	records := make([]parser.Record, numRecords)
 	for i := range records {
-		records[i] = &parser.Record{
+		records[i] = parser.Record{
 			Header:   header,
 			Sequence: seq,
 			Quality:  qual,
