@@ -753,7 +753,7 @@ func (br *blockReader) writeRecord(w io.Writer) error {
 	if bw, ok := w.(*bytes.Buffer); ok {
 		// Fast path for bytes.Buffer (parallel decompression)
 		bw.WriteByte('@')
-		bw.WriteString(recHeader)
+		bw.Write(recHeader)
 		bw.WriteByte('\n')
 		bw.Write(seq)
 		bw.WriteByte('\n')
@@ -826,17 +826,17 @@ func (br *blockReader) readQuality(seqLen int) ([]byte, error) {
 	return qual, nil
 }
 
-func (br *blockReader) readHeader() (string, error) {
+func (br *blockReader) readHeader() ([]byte, error) {
 	if br.headerOffset+2 > len(br.data.headerData) {
-		return "", errors.New("truncated header data")
+		return nil, errors.New("truncated header data")
 	}
 	headerLen := int(binary.LittleEndian.Uint16(br.data.headerData[br.headerOffset : br.headerOffset+2]))
 	br.headerOffset += 2
 
 	if br.headerOffset+headerLen > len(br.data.headerData) {
-		return "", errors.New("truncated header data")
+		return nil, errors.New("truncated header data")
 	}
-	recHeader := string(br.data.headerData[br.headerOffset : br.headerOffset+headerLen])
+	recHeader := br.data.headerData[br.headerOffset : br.headerOffset+headerLen]
 	br.headerOffset += headerLen
 	return recHeader, nil
 }

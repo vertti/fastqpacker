@@ -478,7 +478,7 @@ func BenchmarkCompressBlock(b *testing.B) {
 	// Generate test records directly (bypasses parser + file header overhead)
 	seq := []byte(strings.Repeat("ACGT", 38)) // 152bp
 	qual := []byte(strings.Repeat("I", 152))
-	header := "HWI-ST123:4:1101:14346:1976#0/1"
+	header := []byte("HWI-ST123:4:1101:14346:1976#0/1")
 
 	const numRecords = 100000
 	records := make([]*parser.Record, numRecords)
