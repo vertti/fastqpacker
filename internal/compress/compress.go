@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/errgroup"
@@ -20,6 +21,25 @@ import (
 
 // DefaultBlockSize is the default number of records per block.
 const DefaultBlockSize = 100000
+
+// batchPool recycles RecordBatch objects to reduce allocations.
+var batchPool = sync.Pool{
+	New: func() interface{} {
+		return &parser.RecordBatch{
+			Records: make([]parser.Record, 0, DefaultBlockSize),
+			Data:    make([]byte, 0, DefaultBlockSize*500), // ~500 bytes per record estimation
+		}
+	},
+}
+
+func getBatch() *parser.RecordBatch {
+	return batchPool.Get().(*parser.RecordBatch)
+}
+
+func putBatch(b *parser.RecordBatch) {
+	b.Reset()
+	batchPool.Put(b)
+}
 
 // Options configures compression behavior.
 type Options struct {
@@ -34,8 +54,8 @@ type DecompressOptions struct {
 
 // compressJob represents a block to be compressed.
 type compressJob struct {
-	seqNum  int
-	records []*parser.Record
+	seqNum int
+	batch  *parser.RecordBatch
 }
 
 // compressResult represents a compressed block.
@@ -73,17 +93,34 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 
 	// Parse first batch to detect quality encoding
 	p := parser.New(r)
-	firstBatch, err := p.NextBatch(int(opts.BlockSize))
+	firstBatch := getBatch()
+
+	// Ensure capacity for requested block size
+	if cap(firstBatch.Records) < int(opts.BlockSize) {
+		firstBatch.Records = make([]parser.Record, 0, opts.BlockSize)
+	}
+
+	err := p.ReadBatch(firstBatch, int(opts.BlockSize))
+	// Check for EOF is implicit in len(Records) == 0, but ReadBatch might return error
 	if err != nil && !errors.Is(err, io.EOF) {
+		putBatch(firstBatch)
 		return fmt.Errorf("parsing FASTQ: %w", err)
+	}
+
+	firstBatchEOF := false
+	if len(firstBatch.Records) < int(opts.BlockSize) {
+		firstBatchEOF = true
+	}
+	if errors.Is(err, io.EOF) {
+		firstBatchEOF = true
 	}
 
 	// Detect encoding from first batch
 	qualEncoding := encoder.EncodingPhred33
-	if len(firstBatch) > 0 {
-		qualities := make([][]byte, len(firstBatch))
-		for i, rec := range firstBatch {
-			qualities[i] = rec.Quality
+	if len(firstBatch.Records) > 0 {
+		qualities := make([][]byte, len(firstBatch.Records))
+		for i := range firstBatch.Records {
+			qualities[i] = firstBatch.Records[i].Quality
 		}
 		qualEncoding = encoder.DetectEncoding(qualities)
 	}
@@ -98,18 +135,21 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 		header.Flags |= format.FlagPhred64
 	}
 	if err := header.Write(w); err != nil {
+		putBatch(firstBatch)
 		return fmt.Errorf("writing file header: %w", err)
 	}
 
 	// Single worker path (simpler, no goroutine overhead)
 	if opts.Workers == 1 {
-		return compressSingleWorkerWithBatch(firstBatch, p, w, opts, qualEncoding, errors.Is(err, io.EOF))
+		err := compressSingleWorkerWithBatch(firstBatch, p, w, opts, qualEncoding, firstBatchEOF)
+		putBatch(firstBatch) // Ensure we return it
+		return err
 	}
 
-	return compressParallelWithBatch(firstBatch, p, w, opts, qualEncoding, errors.Is(err, io.EOF))
+	return compressParallelWithBatch(firstBatch, p, w, opts, qualEncoding, firstBatchEOF)
 }
 
-func compressSingleWorkerWithBatch(firstBatch []*parser.Record, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
+func compressSingleWorkerWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
 	zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	if err != nil {
 		return fmt.Errorf("creating zstd encoder: %w", err)
@@ -117,8 +157,8 @@ func compressSingleWorkerWithBatch(firstBatch []*parser.Record, p *parser.Parser
 	defer zstdEnc.Close() //nolint:errcheck // encoder close during cleanup
 
 	// Process first batch if present
-	if len(firstBatch) > 0 {
-		if blockErr := compressBlock(firstBatch, w, zstdEnc, qualEncoding); blockErr != nil {
+	if len(firstBatch.Records) > 0 {
+		if blockErr := compressBlock(firstBatch.Records, w, zstdEnc, qualEncoding); blockErr != nil {
 			return fmt.Errorf("compressing block: %w", blockErr)
 		}
 	}
@@ -127,16 +167,20 @@ func compressSingleWorkerWithBatch(firstBatch []*parser.Record, p *parser.Parser
 		return nil
 	}
 
+	// Reuse a batch for subsequent reads
+	batch := getBatch()
+	defer putBatch(batch)
+
 	for {
-		batch, err := p.NextBatch(int(opts.BlockSize))
+		err := p.ReadBatch(batch, int(opts.BlockSize))
 		if err != nil && !errors.Is(err, io.EOF) {
 			return fmt.Errorf("parsing FASTQ: %w", err)
 		}
-		if len(batch) == 0 {
+		if len(batch.Records) == 0 {
 			break
 		}
 
-		if blockErr := compressBlock(batch, w, zstdEnc, qualEncoding); blockErr != nil {
+		if blockErr := compressBlock(batch.Records, w, zstdEnc, qualEncoding); blockErr != nil {
 			return fmt.Errorf("compressing block: %w", blockErr)
 		}
 
@@ -148,7 +192,7 @@ func compressSingleWorkerWithBatch(firstBatch []*parser.Record, p *parser.Parser
 	return nil
 }
 
-func compressParallelWithBatch(firstBatch []*parser.Record, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
+func compressParallelWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
 	jobs := make(chan compressJob, opts.Workers*2)
 	results := make(chan compressResult, opts.Workers*2)
 
@@ -198,27 +242,34 @@ func runCompressionWorker(ctx context.Context, jobs <-chan compressJob, results 
 	for job := range jobs {
 		select {
 		case <-ctx.Done():
+			putBatch(job.batch) // cleanup
 			return ctx.Err()
 		default:
 		}
 
-		data, err := compressBlockToBytes(job.records, zstdEnc, qualEncoding)
+		data, err := compressBlockToBytes(job.batch.Records, zstdEnc, qualEncoding)
+		putBatch(job.batch) // Return batch to pool after processing
+
 		results <- compressResult{seqNum: job.seqNum, data: data, err: err}
 	}
 	return nil
 }
 
-func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatch []*parser.Record, p *parser.Parser, blockSize uint32, firstBatchEOF bool) error {
+func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatch *parser.RecordBatch, p *parser.Parser, blockSize uint32, firstBatchEOF bool) error {
 	seqNum := 0
 
 	// Send first batch if present
-	if len(firstBatch) > 0 {
+	if len(firstBatch.Records) > 0 {
 		select {
-		case jobs <- compressJob{seqNum: seqNum, records: firstBatch}:
+		case jobs <- compressJob{seqNum: seqNum, batch: firstBatch}:
 			seqNum++
 		case <-ctx.Done():
+			putBatch(firstBatch) // cleanup
 			return ctx.Err()
 		}
+	} else {
+		// If empty, return it to pool
+		putBatch(firstBatch)
 	}
 
 	if firstBatchEOF {
@@ -226,18 +277,27 @@ func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatc
 	}
 
 	for {
-		batch, err := p.NextBatch(int(blockSize))
+		batch := getBatch()
+		// Ensure capacity
+		if cap(batch.Records) < int(blockSize) {
+			batch.Records = make([]parser.Record, 0, blockSize)
+		}
+
+		err := p.ReadBatch(batch, int(blockSize))
 		if err != nil && !errors.Is(err, io.EOF) {
+			putBatch(batch)
 			return fmt.Errorf("parsing FASTQ: %w", err)
 		}
-		if len(batch) == 0 {
+		if len(batch.Records) == 0 {
+			putBatch(batch)
 			break
 		}
 
 		select {
-		case jobs <- compressJob{seqNum: seqNum, records: batch}:
+		case jobs <- compressJob{seqNum: seqNum, batch: batch}:
 			seqNum++
 		case <-ctx.Done():
+			putBatch(batch)
 			return ctx.Err()
 		}
 
@@ -310,7 +370,7 @@ func ctx() context.Context {
 }
 
 // compressBlockToBytes compresses a block and returns the serialized bytes.
-func compressBlockToBytes(records []*parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
+func compressBlockToBytes(records []parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := compressBlock(records, &buf, zstdEnc, qualEncoding); err != nil {
 		return nil, err
@@ -318,7 +378,7 @@ func compressBlockToBytes(records []*parser.Record, zstdEnc *zstd.Encoder, qualE
 	return buf.Bytes(), nil
 }
 
-func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) error {
+func compressBlock(records []parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) error {
 	// Estimate sizes for preallocation (typical 150bp reads)
 	estimatedSeqBytes := len(records) * 40     // ~150bp / 4 bases per byte
 	estimatedQualBytes := len(records) * 150   // 1 byte per base
@@ -331,40 +391,41 @@ func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder,
 	allHeaders := make([]byte, 0, estimatedHeaderBytes)
 
 	var originalSeqSize, originalQualSize uint32
+	var nPosRec []uint16 // reused buffer for N positions per record
 
-	for _, rec := range records {
+	for i := range records {
+		rec := &records[i]
+
 		// Encode sequence
-		packed, nPos := encoder.PackBases(rec.Sequence)
-		allSeqPacked = append(allSeqPacked, packed...)
+		// Use AppendPackedBases to avoid allocations
+		nPosRec = nPosRec[:0]
+		allSeqPacked, nPosRec = encoder.AppendPackedBases(allSeqPacked, nPosRec, rec.Sequence)
 
 		// Store N positions: count (uint16) + positions (uint16 each)
-		nPosBuf := make([]byte, 2+len(nPos)*2)
-		binary.LittleEndian.PutUint16(nPosBuf[0:2], uint16(len(nPos))) //nolint:gosec // len(nPos) bounded by seq length
-		for i, pos := range nPos {
-			binary.LittleEndian.PutUint16(nPosBuf[2+i*2:4+i*2], pos)
+		allNPositions = binary.LittleEndian.AppendUint16(allNPositions, uint16(len(nPosRec)))
+		for _, pos := range nPosRec {
+			allNPositions = binary.LittleEndian.AppendUint16(allNPositions, pos)
 		}
-		allNPositions = append(allNPositions, nPosBuf...)
 
 		// Store sequence length
-		seqLenBuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(seqLenBuf, uint32(len(rec.Sequence))) //nolint:gosec // seq length bounded
-		allSeqLengths = append(allSeqLengths, seqLenBuf...)
+		allSeqLengths = binary.LittleEndian.AppendUint32(allSeqLengths, uint32(len(rec.Sequence))) //nolint:gosec // seq length bounded
 
 		originalSeqSize += uint32(len(rec.Sequence)) //nolint:gosec // bounded
 
 		// Encode quality: normalize to 0-based, then delta encode
-		qualCopy := make([]byte, len(rec.Quality))
-		copy(qualCopy, rec.Quality)
-		encoder.NormalizeQuality(qualCopy, qualEncoding)
-		encoder.DeltaEncode(qualCopy)
-		allQuality = append(allQuality, qualCopy...)
+		// Append directly to avoid allocation, then modify in-place
+		qualStart := len(allQuality)
+		allQuality = append(allQuality, rec.Quality...)
+		qualSlice := allQuality[qualStart:]
+
+		encoder.NormalizeQuality(qualSlice, qualEncoding)
+		encoder.DeltaEncode(qualSlice)
+
 		originalQualSize += uint32(len(rec.Quality)) //nolint:gosec // bounded
 
 		// Store header with length prefix
-		headerBuf := make([]byte, 2+len(rec.Header))
-		binary.LittleEndian.PutUint16(headerBuf[0:2], uint16(len(rec.Header))) //nolint:gosec // header length bounded
-		copy(headerBuf[2:], rec.Header)
-		allHeaders = append(allHeaders, headerBuf...)
+		allHeaders = binary.LittleEndian.AppendUint16(allHeaders, uint16(len(rec.Header))) //nolint:gosec // header length bounded
+		allHeaders = append(allHeaders, rec.Header...)
 	}
 
 	// Compress each stream with zstd
