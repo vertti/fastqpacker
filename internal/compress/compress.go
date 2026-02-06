@@ -748,7 +748,32 @@ func (br *blockReader) writeRecord(w io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(w, "@%s\n%s\n+\n%s\n", recHeader, seq, qual)
+	// Write FASTQ record using direct writes instead of fmt.Fprintf
+	// to avoid format string parsing and interface dispatch per record.
+	if bw, ok := w.(*bytes.Buffer); ok {
+		// Fast path for bytes.Buffer (parallel decompression)
+		bw.WriteByte('@')
+		bw.WriteString(recHeader)
+		bw.WriteByte('\n')
+		bw.Write(seq)
+		bw.WriteByte('\n')
+		bw.WriteByte('+')
+		bw.WriteByte('\n')
+		bw.Write(qual)
+		bw.WriteByte('\n')
+		return nil
+	}
+	// General io.Writer path — build record into scratch buffer
+	needed := 1 + len(recHeader) + 1 + len(seq) + 3 + len(qual) + 1
+	buf := make([]byte, 0, needed)
+	buf = append(buf, '@')
+	buf = append(buf, recHeader...)
+	buf = append(buf, '\n')
+	buf = append(buf, seq...)
+	buf = append(buf, '\n', '+', '\n')
+	buf = append(buf, qual...)
+	buf = append(buf, '\n')
+	_, err = w.Write(buf)
 	return err
 }
 
