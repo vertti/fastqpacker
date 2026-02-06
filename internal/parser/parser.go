@@ -10,9 +10,21 @@ import (
 
 // Record represents a single FASTQ record.
 type Record struct {
-	Header   string // Header line without the leading '@'
+	Header   []byte // Header line without the leading '@'
 	Sequence []byte // DNA sequence (A, C, G, T, N)
 	Quality  []byte // Quality scores (Phred+33 encoded)
+}
+
+// RecordBatch holds a batch of records and the underlying data buffer.
+type RecordBatch struct {
+	Records []Record
+	Data    []byte
+}
+
+// Reset resets the batch for reuse.
+func (b *RecordBatch) Reset() {
+	b.Records = b.Records[:0]
+	b.Data = b.Data[:0]
 }
 
 // Parser reads FASTQ records from an input stream.
@@ -42,7 +54,9 @@ func (p *Parser) Next() (*Record, error) {
 	if len(line) == 0 || line[0] != '@' {
 		return nil, errors.New("invalid FASTQ: header line must start with @")
 	}
-	rec.Header = string(line[1:]) // strip leading @
+	// Copy to new slice to own memory
+	rec.Header = make([]byte, len(line)-1)
+	copy(rec.Header, line[1:])
 
 	// Line 2: Sequence
 	line, err = p.readLine()
@@ -93,6 +107,78 @@ func (p *Parser) NextBatch(n int) ([]*Record, error) {
 		batch = append(batch, rec)
 	}
 	return batch, nil
+}
+
+// ReadBatch reads up to n records into the provided RecordBatch.
+// It tries to minimize allocations by using the batch's Data buffer.
+func (p *Parser) ReadBatch(batch *RecordBatch, n int) error {
+	batch.Reset()
+
+	// Ensure capacity for records
+	if cap(batch.Records) < n {
+		batch.Records = make([]Record, 0, n)
+	}
+
+	for i := 0; i < n; i++ {
+		// Line 1: Header (starts with @)
+		line, err := p.readLine()
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(batch.Records) > 0 {
+				return nil
+			}
+			return err
+		}
+		if len(line) == 0 || line[0] != '@' {
+			return errors.New("invalid FASTQ: header line must start with @")
+		}
+
+		// Append to batch.Data
+		headerStart := len(batch.Data)
+		batch.Data = append(batch.Data, line[1:]...)
+		headerEnd := len(batch.Data)
+
+		// Line 2: Sequence
+		line, err = p.readLine()
+		if err != nil {
+			return err
+		}
+		seqStart := len(batch.Data)
+		batch.Data = append(batch.Data, line...)
+		seqEnd := len(batch.Data)
+
+		// Line 3: Plus line
+		line, err = p.readLine()
+		if err != nil {
+			return err
+		}
+		if len(line) == 0 || line[0] != '+' {
+			return errors.New("invalid FASTQ: separator line must start with +")
+		}
+
+		// Line 4: Quality
+		line, err = p.readLine()
+		if err != nil {
+			return err
+		}
+		qualStart := len(batch.Data)
+		batch.Data = append(batch.Data, line...)
+		qualEnd := len(batch.Data)
+
+		// Validate lengths
+		if (seqEnd - seqStart) != (qualEnd - qualStart) {
+			return errors.New("invalid FASTQ: sequence and quality lengths must match")
+		}
+
+		// Create record referencing the Data buffer
+		rec := Record{
+			Header:   batch.Data[headerStart:headerEnd],
+			Sequence: batch.Data[seqStart:seqEnd],
+			Quality:  batch.Data[qualStart:qualEnd],
+		}
+		batch.Records = append(batch.Records, rec)
+	}
+
+	return nil
 }
 
 // readLine reads a line from the input, stripping the newline.
