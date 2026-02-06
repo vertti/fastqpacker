@@ -1,6 +1,6 @@
 # FastQPacker Roadmap
 
-## Current Status: v0.3.0 Released ✅
+## Current Status: v0.4.0 Released ✅
 
 Fastest FASTQ compression tool — best speed in both directions with excellent ratio.
 
@@ -8,7 +8,7 @@ Fastest FASTQ compression tool — best speed in both directions with excellent 
 
 | Tool      | Size    | Ratio | Compress | Decompress | Speed     |
 |-----------|---------|-------|----------|------------|-----------|
-| fqpack    | 28.7MB  | 6.54x | **292ms**| **137ms**  | **644 MB/s** |
+| fqpack    | 28.7MB  | 6.54x | **181ms**| **115ms**  | **988 MB/s** |
 | pigz      | 35.5MB  | 5.29x | 1482ms   | 147ms      | 127 MB/s  |
 | gzip      | 35.5MB  | 5.29x | 11368ms  | 142ms      | 17 MB/s   |
 | repaq     | 38.7MB  | 4.84x | 644ms    | 496ms      | 292 MB/s  |
@@ -57,9 +57,19 @@ Fastest FASTQ compression tool — best speed in both directions with excellent 
 - [x] -w flag controls workers for both compress and decompress
 - [x] 7x speedup (979ms → 137ms), now faster than gzip/pigz
 
+### Milestone 8: Performance Optimization ✅
+- [x] Lookup table + loop unrolling for PackBases/UnpackBases (36-54% faster)
+- [x] Eliminate per-record allocations in compressBlock (stack arrays, direct append)
+- [x] sync.Pool for block-level buffer reuse
+- [x] Parser Record slab + shared backing buffer (allocs 70k → 20k)
+- [x] Buffered output writer (1MB)
+- [x] Direct writes in decompression (replace fmt.Fprintf)
+- [x] PGO build target
+- [x] 34% faster compression on 9GB benchmark (1,483 → 1,991 MB/s)
+
 ## Upcoming Milestones
 
-### Milestone 8: Robustness
+### Milestone 9: Robustness
 - [ ] Handle edge cases: spaces in headers, unusual characters
 - [ ] Better error messages for malformed input
 

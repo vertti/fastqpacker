@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
@@ -129,14 +130,16 @@ func openInput(path string) (io.Reader, func(), error) {
 
 func openOutput(path string, toStdout bool) (io.Writer, func(), error) {
 	if path == "" || path == "-" || toStdout {
-		return os.Stdout, func() {}, nil
+		bw := bufio.NewWriterSize(os.Stdout, 1<<20)
+		return bw, func() { _ = bw.Flush() }, nil
 	}
 
 	f, err := os.Create(path) //nolint:gosec // CLI tool needs to create user-specified files
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot create output: %w", err)
 	}
-	return f, func() { _ = f.Close() }, nil
+	bw := bufio.NewWriterSize(f, 1<<20)
+	return bw, func() { _ = bw.Flush(); _ = f.Close() }, nil
 }
 
 func execute(cfg config, input io.Reader, output io.Writer) error {

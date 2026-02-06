@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/errgroup"
@@ -17,6 +18,46 @@ import (
 	"github.com/vertti/fastqpacker/internal/format"
 	"github.com/vertti/fastqpacker/internal/parser"
 )
+
+// blockBuffers holds reusable buffers for block compression.
+// Pooled via sync.Pool to avoid allocations across blocks.
+type blockBuffers struct {
+	seqPacked   []byte
+	nPositions  []byte
+	seqLengths  []byte
+	quality     []byte
+	headers     []byte
+	nPosScratch []byte
+	// Reusable destination slices for zstd EncodeAll
+	compSeq     []byte
+	compQual    []byte
+	compHeaders []byte
+	compNPos    []byte
+	compLen     []byte
+	outputBuf   bytes.Buffer
+}
+
+var blockBufferPool = sync.Pool{
+	New: func() any {
+		return &blockBuffers{
+			nPosScratch: make([]byte, 0, 256),
+		}
+	},
+}
+
+func (b *blockBuffers) reset() {
+	b.seqPacked = b.seqPacked[:0]
+	b.nPositions = b.nPositions[:0]
+	b.seqLengths = b.seqLengths[:0]
+	b.quality = b.quality[:0]
+	b.headers = b.headers[:0]
+	b.compSeq = b.compSeq[:0]
+	b.compQual = b.compQual[:0]
+	b.compHeaders = b.compHeaders[:0]
+	b.compNPos = b.compNPos[:0]
+	b.compLen = b.compLen[:0]
+	b.outputBuf.Reset()
+}
 
 // DefaultBlockSize is the default number of records per block.
 const DefaultBlockSize = 100000
@@ -311,78 +352,85 @@ func ctx() context.Context {
 
 // compressBlockToBytes compresses a block and returns the serialized bytes.
 func compressBlockToBytes(records []*parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := compressBlock(records, &buf, zstdEnc, qualEncoding); err != nil {
+	bufs := blockBufferPool.Get().(*blockBuffers) //nolint:errcheck // pool always returns *blockBuffers
+	bufs.reset()
+	defer blockBufferPool.Put(bufs)
+
+	if err := compressBlockWithBuffers(records, &bufs.outputBuf, zstdEnc, qualEncoding, bufs); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	// Copy output so the pooled buffer can be reused
+	out := make([]byte, bufs.outputBuf.Len())
+	copy(out, bufs.outputBuf.Bytes())
+	return out, nil
 }
 
 func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) error {
-	// Estimate sizes for preallocation (typical 150bp reads)
-	estimatedSeqBytes := len(records) * 40     // ~150bp / 4 bases per byte
-	estimatedQualBytes := len(records) * 150   // 1 byte per base
-	estimatedHeaderBytes := len(records) * 100 // typical header size
+	bufs := blockBufferPool.Get().(*blockBuffers) //nolint:errcheck // pool always returns *blockBuffers
+	bufs.reset()
+	defer blockBufferPool.Put(bufs)
 
-	allSeqPacked := make([]byte, 0, estimatedSeqBytes)
-	allNPositions := make([]byte, 0, len(records)*4) // minimum 2 bytes per record
-	allSeqLengths := make([]byte, 0, len(records)*4) // exactly 4 bytes per record
-	allQuality := make([]byte, 0, estimatedQualBytes)
-	allHeaders := make([]byte, 0, estimatedHeaderBytes)
+	return compressBlockWithBuffers(records, w, zstdEnc, qualEncoding, bufs)
+}
 
+func compressBlockWithBuffers(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding, bufs *blockBuffers) error {
 	var originalSeqSize, originalQualSize uint32
+	var seqLenBuf [4]byte
+	var headerLenBuf [2]byte
 
 	for _, rec := range records {
 		// Encode sequence
 		packed, nPos := encoder.PackBases(rec.Sequence)
-		allSeqPacked = append(allSeqPacked, packed...)
+		bufs.seqPacked = append(bufs.seqPacked, packed...)
 
 		// Store N positions: count (uint16) + positions (uint16 each)
-		nPosBuf := make([]byte, 2+len(nPos)*2)
-		binary.LittleEndian.PutUint16(nPosBuf[0:2], uint16(len(nPos))) //nolint:gosec // len(nPos) bounded by seq length
-		for i, pos := range nPos {
-			binary.LittleEndian.PutUint16(nPosBuf[2+i*2:4+i*2], pos)
+		needed := 2 + len(nPos)*2
+		if cap(bufs.nPosScratch) < needed {
+			bufs.nPosScratch = make([]byte, needed)
 		}
-		allNPositions = append(allNPositions, nPosBuf...)
+		bufs.nPosScratch = bufs.nPosScratch[:needed]
+		binary.LittleEndian.PutUint16(bufs.nPosScratch[0:2], uint16(len(nPos))) //nolint:gosec // len(nPos) bounded by seq length
+		for i, pos := range nPos {
+			binary.LittleEndian.PutUint16(bufs.nPosScratch[2+i*2:4+i*2], pos)
+		}
+		bufs.nPositions = append(bufs.nPositions, bufs.nPosScratch...)
 
-		// Store sequence length
-		seqLenBuf := make([]byte, 4)
-		binary.LittleEndian.PutUint32(seqLenBuf, uint32(len(rec.Sequence))) //nolint:gosec // seq length bounded
-		allSeqLengths = append(allSeqLengths, seqLenBuf...)
+		// Store sequence length (stack array, zero allocs)
+		binary.LittleEndian.PutUint32(seqLenBuf[:], uint32(len(rec.Sequence))) //nolint:gosec // seq length bounded
+		bufs.seqLengths = append(bufs.seqLengths, seqLenBuf[:]...)
 
 		originalSeqSize += uint32(len(rec.Sequence)) //nolint:gosec // bounded
 
-		// Encode quality: normalize to 0-based, then delta encode
-		qualCopy := make([]byte, len(rec.Quality))
-		copy(qualCopy, rec.Quality)
-		encoder.NormalizeQuality(qualCopy, qualEncoding)
-		encoder.DeltaEncode(qualCopy)
-		allQuality = append(allQuality, qualCopy...)
+		// Encode quality: append into buffer, then normalize+delta the tail in-place
+		qualStart := len(bufs.quality)
+		bufs.quality = append(bufs.quality, rec.Quality...)
+		qualSlice := bufs.quality[qualStart:]
+		encoder.NormalizeQuality(qualSlice, qualEncoding)
+		encoder.DeltaEncode(qualSlice)
 		originalQualSize += uint32(len(rec.Quality)) //nolint:gosec // bounded
 
-		// Store header with length prefix
-		headerBuf := make([]byte, 2+len(rec.Header))
-		binary.LittleEndian.PutUint16(headerBuf[0:2], uint16(len(rec.Header))) //nolint:gosec // header length bounded
-		copy(headerBuf[2:], rec.Header)
-		allHeaders = append(allHeaders, headerBuf...)
+		// Store header with length prefix (no allocation)
+		binary.LittleEndian.PutUint16(headerLenBuf[:], uint16(len(rec.Header))) //nolint:gosec // header length bounded
+		bufs.headers = append(bufs.headers, headerLenBuf[:]...)
+		bufs.headers = append(bufs.headers, rec.Header...)
 	}
 
-	// Compress each stream with zstd
-	compressedSeq := zstdEnc.EncodeAll(allSeqPacked, nil)
-	compressedQual := zstdEnc.EncodeAll(allQuality, nil)
-	compressedHeaders := zstdEnc.EncodeAll(allHeaders, nil)
-	compressedNPos := zstdEnc.EncodeAll(allNPositions, nil)
-	compressedLengths := zstdEnc.EncodeAll(allSeqLengths, nil)
+	// Compress each stream with zstd, reusing destination slices
+	bufs.compSeq = zstdEnc.EncodeAll(bufs.seqPacked, bufs.compSeq[:0])
+	bufs.compQual = zstdEnc.EncodeAll(bufs.quality, bufs.compQual[:0])
+	bufs.compHeaders = zstdEnc.EncodeAll(bufs.headers, bufs.compHeaders[:0])
+	bufs.compNPos = zstdEnc.EncodeAll(bufs.nPositions, bufs.compNPos[:0])
+	bufs.compLen = zstdEnc.EncodeAll(bufs.seqLengths, bufs.compLen[:0])
 
 	// Write block header
 	//nolint:gosec // All lengths are bounded by block size and data sizes
 	blockHeader := format.BlockHeader{
 		NumRecords:       uint32(len(records)),
-		SeqDataSize:      uint32(len(compressedSeq)),
-		QualDataSize:     uint32(len(compressedQual)),
-		HeaderDataSize:   uint32(len(compressedHeaders)),
-		NPositionsSize:   uint32(len(compressedNPos)),
-		SeqLengthsSize:   uint32(len(compressedLengths)),
+		SeqDataSize:      uint32(len(bufs.compSeq)),
+		QualDataSize:     uint32(len(bufs.compQual)),
+		HeaderDataSize:   uint32(len(bufs.compHeaders)),
+		NPositionsSize:   uint32(len(bufs.compNPos)),
+		SeqLengthsSize:   uint32(len(bufs.compLen)),
 		OriginalSeqSize:  originalSeqSize,
 		OriginalQualSize: originalQualSize,
 	}
@@ -391,7 +439,7 @@ func compressBlock(records []*parser.Record, w io.Writer, zstdEnc *zstd.Encoder,
 	}
 
 	// Write compressed data
-	for _, data := range [][]byte{compressedSeq, compressedQual, compressedHeaders, compressedNPos, compressedLengths} {
+	for _, data := range [][]byte{bufs.compSeq, bufs.compQual, bufs.compHeaders, bufs.compNPos, bufs.compLen} {
 		if _, err := w.Write(data); err != nil {
 			return err
 		}
@@ -700,7 +748,32 @@ func (br *blockReader) writeRecord(w io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(w, "@%s\n%s\n+\n%s\n", recHeader, seq, qual)
+	// Write FASTQ record using direct writes instead of fmt.Fprintf
+	// to avoid format string parsing and interface dispatch per record.
+	if bw, ok := w.(*bytes.Buffer); ok {
+		// Fast path for bytes.Buffer (parallel decompression)
+		bw.WriteByte('@')
+		bw.WriteString(recHeader)
+		bw.WriteByte('\n')
+		bw.Write(seq)
+		bw.WriteByte('\n')
+		bw.WriteByte('+')
+		bw.WriteByte('\n')
+		bw.Write(qual)
+		bw.WriteByte('\n')
+		return nil
+	}
+	// General io.Writer path — build record into scratch buffer
+	needed := 1 + len(recHeader) + 1 + len(seq) + 3 + len(qual) + 1
+	buf := make([]byte, 0, needed)
+	buf = append(buf, '@')
+	buf = append(buf, recHeader...)
+	buf = append(buf, '\n')
+	buf = append(buf, seq...)
+	buf = append(buf, '\n', '+', '\n')
+	buf = append(buf, qual...)
+	buf = append(buf, '\n')
+	_, err = w.Write(buf)
 	return err
 }
 
