@@ -32,6 +32,13 @@ var batchPool = sync.Pool{
 	},
 }
 
+// bufferPool recycles bytes.Buffer objects for output construction.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func getBatch() *parser.RecordBatch {
 	return batchPool.Get().(*parser.RecordBatch)
 }
@@ -39,6 +46,18 @@ func getBatch() *parser.RecordBatch {
 func putBatch(b *parser.RecordBatch) {
 	b.Reset()
 	batchPool.Put(b)
+}
+
+func getBuffer() *bytes.Buffer {
+	b := bufferPool.Get().(*bytes.Buffer)
+	b.Reset()
+	return b
+}
+
+func putBuffer(b *bytes.Buffer) {
+	if b != nil {
+		bufferPool.Put(b)
+	}
 }
 
 // Options configures compression behavior.
@@ -62,6 +81,7 @@ type compressJob struct {
 type compressResult struct {
 	seqNum int
 	data   []byte
+	buf    *bytes.Buffer // underlying buffer to be recycled
 	err    error
 }
 
@@ -76,6 +96,7 @@ type decompressJob struct {
 type decompressResult struct {
 	seqNum int
 	data   []byte
+	buf    *bytes.Buffer // underlying buffer to be recycled
 	err    error
 }
 
@@ -247,10 +268,10 @@ func runCompressionWorker(ctx context.Context, jobs <-chan compressJob, results 
 		default:
 		}
 
-		data, err := compressBlockToBytes(job.batch.Records, zstdEnc, qualEncoding)
+		data, buf, err := compressBlockToBytes(job.batch.Records, zstdEnc, qualEncoding)
 		putBatch(job.batch) // Return batch to pool after processing
 
-		results <- compressResult{seqNum: job.seqNum, data: data, err: err}
+		results <- compressResult{seqNum: job.seqNum, data: data, buf: buf, err: err}
 	}
 	return nil
 }
@@ -309,7 +330,7 @@ func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatc
 }
 
 func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
-	pending := make(map[int][]byte)
+	pending := make(map[int]compressResult)
 	nextSeqNum := 0
 
 	for result := range results {
@@ -317,17 +338,18 @@ func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
 			return fmt.Errorf("compressing block %d: %w", result.seqNum, result.err)
 		}
 
-		pending[result.seqNum] = result.data
+		pending[result.seqNum] = result
 
 		// Write all sequential results available
 		for {
-			data, ok := pending[nextSeqNum]
+			res, ok := pending[nextSeqNum]
 			if !ok {
 				break
 			}
-			if _, err := w.Write(data); err != nil {
+			if _, err := w.Write(res.data); err != nil {
 				return fmt.Errorf("writing block %d: %w", nextSeqNum, err)
 			}
+			putBuffer(res.buf)
 			delete(pending, nextSeqNum)
 			nextSeqNum++
 		}
@@ -337,7 +359,7 @@ func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
 }
 
 func collectAndWriteDecompressResults(results <-chan decompressResult, w io.Writer) error {
-	pending := make(map[int][]byte)
+	pending := make(map[int]decompressResult)
 	nextSeqNum := 0
 
 	for result := range results {
@@ -345,17 +367,18 @@ func collectAndWriteDecompressResults(results <-chan decompressResult, w io.Writ
 			return fmt.Errorf("decompressing block %d: %w", result.seqNum, result.err)
 		}
 
-		pending[result.seqNum] = result.data
+		pending[result.seqNum] = result
 
 		// Write all sequential results available
 		for {
-			data, ok := pending[nextSeqNum]
+			res, ok := pending[nextSeqNum]
 			if !ok {
 				break
 			}
-			if _, err := w.Write(data); err != nil {
+			if _, err := w.Write(res.data); err != nil {
 				return fmt.Errorf("writing block %d: %w", nextSeqNum, err)
 			}
+			putBuffer(res.buf)
 			delete(pending, nextSeqNum)
 			nextSeqNum++
 		}
@@ -370,12 +393,13 @@ func ctx() context.Context {
 }
 
 // compressBlockToBytes compresses a block and returns the serialized bytes.
-func compressBlockToBytes(records []parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := compressBlock(records, &buf, zstdEnc, qualEncoding); err != nil {
-		return nil, err
+func compressBlockToBytes(records []parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, *bytes.Buffer, error) {
+	buf := getBuffer()
+	if err := compressBlock(records, buf, zstdEnc, qualEncoding); err != nil {
+		putBuffer(buf)
+		return nil, nil, err
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), buf, nil
 }
 
 func compressBlock(records []parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) error {
@@ -568,8 +592,8 @@ func runDecompressionWorker(ctx context.Context, jobs <-chan decompressJob, resu
 		default:
 		}
 
-		data, err := decompressJobToBytes(job, zstdDec, qualEncoding)
-		results <- decompressResult{seqNum: job.seqNum, data: data, err: err}
+		data, buf, err := decompressJobToBytes(job, zstdDec, qualEncoding)
+		results <- decompressResult{seqNum: job.seqNum, data: data, buf: buf, err: err}
 	}
 	return nil
 }
@@ -609,27 +633,27 @@ func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompr
 	}
 }
 
-func decompressJobToBytes(job decompressJob, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
+func decompressJobToBytes(job decompressJob, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) ([]byte, *bytes.Buffer, error) {
 	// Decompress each stream
 	seqData, err := zstdDec.DecodeAll(job.compressed[0], nil)
 	if err != nil {
-		return nil, fmt.Errorf("decompressing sequences: %w", err)
+		return nil, nil, fmt.Errorf("decompressing sequences: %w", err)
 	}
 	qualData, err := zstdDec.DecodeAll(job.compressed[1], nil)
 	if err != nil {
-		return nil, fmt.Errorf("decompressing quality: %w", err)
+		return nil, nil, fmt.Errorf("decompressing quality: %w", err)
 	}
 	headerData, err := zstdDec.DecodeAll(job.compressed[2], nil)
 	if err != nil {
-		return nil, fmt.Errorf("decompressing headers: %w", err)
+		return nil, nil, fmt.Errorf("decompressing headers: %w", err)
 	}
 	nPosData, err := zstdDec.DecodeAll(job.compressed[3], nil)
 	if err != nil {
-		return nil, fmt.Errorf("decompressing N positions: %w", err)
+		return nil, nil, fmt.Errorf("decompressing N positions: %w", err)
 	}
 	lengthData, err := zstdDec.DecodeAll(job.compressed[4], nil)
 	if err != nil {
-		return nil, fmt.Errorf("decompressing lengths: %w", err)
+		return nil, nil, fmt.Errorf("decompressing lengths: %w", err)
 	}
 
 	data := &blockData{
@@ -641,15 +665,17 @@ func decompressJobToBytes(job decompressJob, zstdDec *zstd.Decoder, qualEncoding
 	}
 
 	// Format into FASTQ
-	var buf bytes.Buffer
+	buf := getBuffer()
+
 	br := &blockReader{data: data, qualEncoding: qualEncoding}
 	for range job.header.NumRecords {
-		if err := br.writeRecord(&buf); err != nil {
-			return nil, err
+		if err := br.writeRecord(buf); err != nil {
+			putBuffer(buf)
+			return nil, nil, err
 		}
 	}
 
-	return buf.Bytes(), nil
+	return buf.Bytes(), buf, nil
 }
 
 // blockData holds decompressed data for a block.
@@ -678,9 +704,28 @@ func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Write
 		return err
 	}
 
+	// Use pooled buffer for formatting
+	buf := getBuffer()
+	defer putBuffer(buf)
+
 	br := &blockReader{data: data, qualEncoding: qualEncoding}
 	for range header.NumRecords {
-		if err := br.writeRecord(w); err != nil {
+		// If buffer gets too large, flush it
+		if buf.Len() > 1<<20 { // 1MB
+			if _, err := w.Write(buf.Bytes()); err != nil {
+				return err
+			}
+			buf.Reset()
+		}
+
+		if err := br.writeRecord(buf); err != nil {
+			return err
+		}
+	}
+
+	// Write remaining
+	if buf.Len() > 0 {
+		if _, err := w.Write(buf.Bytes()); err != nil {
 			return err
 		}
 	}
@@ -735,7 +780,7 @@ func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zs
 	}, nil
 }
 
-func (br *blockReader) writeRecord(w io.Writer) error {
+func (br *blockReader) writeRecord(buf *bytes.Buffer) error {
 	seqLen, err := br.readSeqLength()
 	if err != nil {
 		return err
@@ -746,23 +791,29 @@ func (br *blockReader) writeRecord(w io.Writer) error {
 		return err
 	}
 
-	seq, err := br.readSequence(seqLen, nPos)
-	if err != nil {
+	// @
+	buf.WriteByte('@')
+	if err := br.appendHeader(buf); err != nil {
 		return err
 	}
+	buf.WriteByte('\n')
 
-	qual, err := br.readQuality(seqLen)
-	if err != nil {
+	// Sequence
+	if err := br.appendSequence(buf, seqLen, nPos); err != nil {
 		return err
 	}
+	buf.WriteByte('\n')
 
-	recHeader, err := br.readHeader()
-	if err != nil {
+	// +
+	buf.WriteString("+\n")
+
+	// Quality
+	if err := br.appendQuality(buf, seqLen); err != nil {
 		return err
 	}
+	buf.WriteByte('\n')
 
-	_, err = fmt.Fprintf(w, "@%s\n%s\n+\n%s\n", recHeader, seq, qual)
-	return err
+	return nil
 }
 
 func (br *blockReader) readSeqLength() (int, error) {
@@ -792,39 +843,76 @@ func (br *blockReader) readNPositions() ([]uint16, error) {
 	return nPos, nil
 }
 
-func (br *blockReader) readSequence(seqLen int, nPos []uint16) ([]byte, error) {
+func (br *blockReader) appendSequence(buf *bytes.Buffer, seqLen int, nPos []uint16) error {
 	packedLen := (seqLen + 3) / 4
 	if br.seqOffset+packedLen > len(br.data.seqData) {
-		return nil, errors.New("truncated sequence data")
+		return errors.New("truncated sequence data")
 	}
-	seq := encoder.UnpackBases(br.data.seqData[br.seqOffset:br.seqOffset+packedLen], nPos, seqLen)
+
+	// Ensure capacity in buffer for direct write (optimization)
+	buf.Grow(seqLen)
+
+	// Get available buffer space
+	// Go 1.21+ has AvailableBuffer(), but we can assume we are on modern Go.
+	// However, `bytes.Buffer` doesn't let us write directly to unexported `buf`.
+	// But `encoder.AppendUnpackBases` appends to a slice.
+	// We can use `buf.Write` with a slice returned by `AppendUnpackBases`?
+	// No, that allocates the slice if we pass `nil`.
+	// We want to write directly into `buf`'s memory if possible.
+	// `bytes.Buffer` doesn't expose mutable slice of free space easily.
+	//
+	// Alternative: `encoder.AppendUnpackBases` takes `[]byte`.
+	// We can pass a scratch buffer? But we want to write to `buf`.
+
+	// Let's use `AvailableBuffer` pattern if available, or just rely on `Write`.
+	// To be zero-alloc, we need a scratch buffer or write directly.
+	// Since we are pooling `bytes.Buffer`, maybe we can abuse it? No.
+
+	// Let's use a temporary scratch slice from a pool?
+	// Or just allocate for now? No, we want zero alloc.
+
+	// Wait, `encoder.AppendUnpackBases` works on `[]byte`.
+	// If we use `buf.AvailableBuffer()` (added in Go 1.21), we get a slice.
+	// Does `go.mod` say 1.24? Yes.
+	dst := buf.AvailableBuffer()
+	dst = encoder.AppendUnpackBases(dst, br.data.seqData[br.seqOffset:br.seqOffset+packedLen], nPos, seqLen)
+	buf.Write(dst)
+
 	br.seqOffset += packedLen
-	return seq, nil
+	return nil
 }
 
-func (br *blockReader) readQuality(seqLen int) ([]byte, error) {
+func (br *blockReader) appendQuality(buf *bytes.Buffer, seqLen int) error {
 	if br.qualOffset+seqLen > len(br.data.qualData) {
-		return nil, errors.New("truncated quality data")
+		return errors.New("truncated quality data")
 	}
-	qual := make([]byte, seqLen)
-	copy(qual, br.data.qualData[br.qualOffset:br.qualOffset+seqLen])
+
+	// We modify the quality data IN PLACE in the blockData!
+	// This is safe because blockData is created fresh for each block
+	// and discarded after use (it's not pooled, but the byte slices inside come from zstd).
+	// zstd DecodeAll returns a new slice or appends.
+
+	qual := br.data.qualData[br.qualOffset : br.qualOffset+seqLen]
 	encoder.DeltaDecode(qual)
 	encoder.DenormalizeQuality(qual, br.qualEncoding)
+
+	buf.Write(qual)
+
 	br.qualOffset += seqLen
-	return qual, nil
+	return nil
 }
 
-func (br *blockReader) readHeader() (string, error) {
+func (br *blockReader) appendHeader(buf *bytes.Buffer) error {
 	if br.headerOffset+2 > len(br.data.headerData) {
-		return "", errors.New("truncated header data")
+		return errors.New("truncated header data")
 	}
 	headerLen := int(binary.LittleEndian.Uint16(br.data.headerData[br.headerOffset : br.headerOffset+2]))
 	br.headerOffset += 2
 
 	if br.headerOffset+headerLen > len(br.data.headerData) {
-		return "", errors.New("truncated header data")
+		return errors.New("truncated header data")
 	}
-	recHeader := string(br.data.headerData[br.headerOffset : br.headerOffset+headerLen])
+	buf.Write(br.data.headerData[br.headerOffset : br.headerOffset+headerLen])
 	br.headerOffset += headerLen
-	return recHeader, nil
+	return nil
 }
