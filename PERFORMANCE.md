@@ -338,6 +338,19 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: marginal/noisy improvement with extra global pool state.
 - Decision: **discarded** (change reverted).
 
+### 2026-02-07 - E020 - Stack-value rewrite for block decode structs
+
+- Hypothesis: avoid pointer-literal allocations for `blockData`/`blockReader` in decompression hot paths.
+- Change:
+  - `decompressJobToPooledBuffer`: changed `data := &blockData{...}` to value form and used value `blockReader`.
+  - `decompressBlockToWriter`: switched `blockReader` construction to value form.
+- Before (3 runs):
+  - `BenchmarkDecompress`: ~2.058-2.077 ms/op, 40 allocs/op
+- After (3 runs):
+  - `BenchmarkDecompress`: ~2.136-2.155 ms/op, 39-40 allocs/op
+- Result: decompression throughput regressed.
+- Decision: **discarded** (change reverted).
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
