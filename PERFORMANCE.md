@@ -518,3 +518,21 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.6-37.9 ms/op
 - Result: compression regressed with no compensating decompression win.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E031 - Set zstd encoder level to `SpeedFastest`
+
+- Hypothesis: lowering zstd compression level can improve throughput for this speed-focused tool.
+- Change:
+  - `zstdEncoderOptions`: `zstd.WithEncoderLevel(zstd.SpeedDefault)` -> `zstd.WithEncoderLevel(zstd.SpeedFastest)`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.99-4.02 ms/op
+  - `BenchmarkDecompress`: ~2.109-2.117 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.7-38.1 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.90-3.96 ms/op
+  - `BenchmarkDecompress`: ~1.99-2.01 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.1-37.8 ms/op
+- Additional check:
+  - `TestCompressDecompress_LargeBatch` ratio moved from ~388.41x to ~381.36x.
+- Result: strong throughput improvement with a small observed compression-ratio decrease on the large-batch test fixture.
+- Decision: **accepted**.

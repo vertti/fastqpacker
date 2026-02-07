@@ -108,7 +108,7 @@ type decompressResult struct {
 // One zstd instance is used per worker and each worker processes one block at a time.
 // Keep zstd itself single-concurrency to avoid nested parallelism overhead.
 var zstdEncoderOptions = []zstd.EOption{
-	zstd.WithEncoderLevel(zstd.SpeedDefault),
+	zstd.WithEncoderLevel(zstd.SpeedFastest),
 	zstd.WithEncoderConcurrency(1),
 }
 
