@@ -3,7 +3,6 @@ package parser
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"io"
 )
@@ -203,23 +202,37 @@ func (p *Parser) ReadBatch(batch *RecordBatch) error {
 // readLine reads a line from the input, stripping the newline.
 // Reuses an internal buffer to minimize allocations.
 func (p *Parser) readLine() ([]byte, error) {
-	p.line = p.line[:0]
-
-	for {
-		segment, isPrefix, err := p.reader.ReadLine()
-		if err != nil {
-			return nil, err
+	segment, err := p.reader.ReadSlice('\n')
+	if err == nil {
+		line := segment[:len(segment)-1] // drop '\n'
+		if n := len(line); n > 0 && line[n-1] == '\r' {
+			line = line[:n-1]
 		}
+		return line, nil
+	}
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		return nil, err
+	}
 
+	// Fallback for long lines that exceed reader buffer.
+	p.line = append(p.line[:0], segment...)
+	for {
+		segment, err = p.reader.ReadSlice('\n')
 		p.line = append(p.line, segment...)
-
-		if !isPrefix {
+		if err == nil {
 			break
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, err
 		}
 	}
 
-	// Trim any trailing CR (for Windows line endings)
-	p.line = bytes.TrimSuffix(p.line, []byte{'\r'})
-
-	return p.line, nil
+	line := p.line
+	if n := len(line); n > 0 && line[n-1] == '\n' {
+		line = line[:n-1]
+	}
+	if n := len(line); n > 0 && line[n-1] == '\r' {
+		line = line[:n-1]
+	}
+	return line, nil
 }
