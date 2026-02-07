@@ -34,10 +34,10 @@ func init() {
 	// Initialize unpack lookup table
 	bases := [4]byte{'A', 'C', 'G', 'T'}
 	for i := 0; i < 256; i++ {
-		b0 := bases[i&0x03]
-		b1 := bases[(i>>2)&0x03]
-		b2 := bases[(i>>4)&0x03]
-		b3 := bases[(i>>6)&0x03]
+		b0 := bases[i&0x03]      //nolint:gosec // bounds checked by mask
+		b1 := bases[(i>>2)&0x03] //nolint:gosec // bounds checked by mask
+		b2 := bases[(i>>4)&0x03] //nolint:gosec // bounds checked by mask
+		b3 := bases[(i>>6)&0x03] //nolint:gosec // bounds checked by mask
 		unpackLookupUint32[i] = uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
 	}
 
