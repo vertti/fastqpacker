@@ -110,7 +110,6 @@ type decompressResult struct {
 var zstdEncoderOptions = []zstd.EOption{
 	zstd.WithEncoderLevel(zstd.SpeedFastest),
 	zstd.WithEncoderConcurrency(1),
-	zstd.WithEncoderCRC(false),
 }
 
 var zstdDecoderOptions = []zstd.DOption{
