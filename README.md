@@ -24,7 +24,7 @@ Tested on ERR532393_1 (8.9GB Illumina reads), M4 MacBook Pro:
 | repaq+xz | 2,761 MB | 3.2x | 388s | 40s | 23 MB/s |
 | 7z | 2,584 MB | 3.4x | 1,442s | 83s | 6 MB/s |
 
-fqpack is **10% smaller than pigz** with **22x faster compression** and **4x faster decompression**. DSRC compresses 27% smaller but is 3.3x slower to compress and 6x slower to decompress. FQSqueezer achieves the best known compression (1,511 MB, 5.9x ratio) but is ~100x slower.
+fqpack is **14% smaller than pigz** with **24x faster compression** and **4x faster decompression**. DSRC compresses 24% smaller but is 3.6x slower to compress and 6x slower to decompress. FQSqueezer achieves the best known compression (1,511 MB, 5.9x ratio) but is ~100x slower.
 
 Re-run fqpack-only 9GB benchmark:
 ```bash
