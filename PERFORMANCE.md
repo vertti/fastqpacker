@@ -572,3 +572,19 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `TestCompressDecompress_LargeBatch` ratio improved from ~381.36x to ~390.82x.
 - Result: speed improved, but this removes frame-level checksum validation.
 - Decision: **discarded** (reverted due integrity requirements for genomic data).
+
+### 2026-02-07 - E034 - Set zstd window size to `1<<20` with `SpeedFastest`
+
+- Hypothesis: smaller window may reduce encoder work and memory, improving throughput.
+- Change:
+  - Added `zstd.WithWindowSize(1 << 20)` to encoder options.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.78-3.90 ms/op
+  - `BenchmarkDecompress`: ~1.92-1.94 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.0-37.3 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.81-3.83 ms/op
+  - `BenchmarkDecompress`: ~2.06-2.07 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.1-38.4 ms/op
+- Result: decompression and parallel throughput regressed materially.
+- Decision: **discarded** (change reverted).
