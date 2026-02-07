@@ -69,6 +69,27 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: clear decompression improvement with lower allocations; compression unchanged/slightly better.
 - Decision: **accepted**.
 
+### 2026-02-07 - E003 - Set zstd internal concurrency to 1 per worker
+
+- Hypothesis: fqpack already parallelizes at block-worker level, so zstd internal concurrency adds nested overhead.
+- Change:
+  - Added shared zstd options in `internal/compress/compress.go`:
+    - `zstd.WithEncoderConcurrency(1)`
+    - `zstd.WithDecoderConcurrency(1)`
+  - Applied to all encoder/decoder constructions in compress/decompress workers.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.80 ms/op, ~106-111 MB/op, 279-291 allocs/op
+  - `BenchmarkDecompress`: ~2.21 ms/op, ~9.7-10.1 MB/op, 271-272 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~40.2-40.9 ms/op, ~201-235 MB/op, 310-353 allocs/op
+  - `BenchmarkCompressBlock`: ~19.1-19.4 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.24-4.28 ms/op, ~35.7-39.2 MB/op, 151-157 allocs/op
+  - `BenchmarkDecompress`: ~2.17 ms/op, ~9.4-9.6 MB/op, 174-175 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.7-40.5 ms/op, ~89.8-124.5 MB/op, 170-198 allocs/op
+  - `BenchmarkCompressBlock`: ~19.7-19.8 ms/op
+- Result: strong end-to-end compression and allocation win; tiny regression in isolated block benchmark.
+- Decision: **accepted**.
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.

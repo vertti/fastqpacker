@@ -105,6 +105,17 @@ type decompressResult struct {
 	err    error
 }
 
+// One zstd instance is used per worker and each worker processes one block at a time.
+// Keep zstd itself single-concurrency to avoid nested parallelism overhead.
+var zstdEncoderOptions = []zstd.EOption{
+	zstd.WithEncoderLevel(zstd.SpeedDefault),
+	zstd.WithEncoderConcurrency(1),
+}
+
+var zstdDecoderOptions = []zstd.DOption{
+	zstd.WithDecoderConcurrency(1),
+}
+
 // Compress reads FASTQ from r and writes compressed data to w.
 func Compress(r io.Reader, w io.Writer, opts *Options) error {
 	if opts == nil {
@@ -160,7 +171,7 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 }
 
 func compressSingleWorkerWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
-	zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	zstdEnc, err := zstd.NewWriter(nil, zstdEncoderOptions...)
 	if err != nil {
 		batchPool.Put(firstBatch)
 		return fmt.Errorf("creating zstd encoder: %w", err)
@@ -246,7 +257,7 @@ func compressParallelWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser,
 }
 
 func runCompressionWorker(ctx context.Context, jobs <-chan compressJob, results chan<- compressResult, qualEncoding encoder.QualityEncoding) error {
-	zstdEnc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	zstdEnc, err := zstd.NewWriter(nil, zstdEncoderOptions...)
 	if err != nil {
 		return fmt.Errorf("creating zstd encoder: %w", err)
 	}
@@ -519,7 +530,7 @@ func Decompress(r io.Reader, w io.Writer, opts *DecompressOptions) error {
 }
 
 func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.QualityEncoding) error {
-	zstdDec, err := zstd.NewReader(nil)
+	zstdDec, err := zstd.NewReader(nil, zstdDecoderOptions...)
 	if err != nil {
 		return fmt.Errorf("creating zstd decoder: %w", err)
 	}
@@ -583,7 +594,7 @@ func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding enco
 }
 
 func runDecompressionWorker(ctx context.Context, jobs <-chan decompressJob, results chan<- decompressResult, qualEncoding encoder.QualityEncoding) error {
-	zstdDec, err := zstd.NewReader(nil)
+	zstdDec, err := zstd.NewReader(nil, zstdDecoderOptions...)
 	if err != nil {
 		return fmt.Errorf("creating zstd decoder: %w", err)
 	}
