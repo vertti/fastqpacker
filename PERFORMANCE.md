@@ -90,6 +90,79 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: strong end-to-end compression and allocation win; tiny regression in isolated block benchmark.
 - Decision: **accepted**.
 
+### 2026-02-07 - E004 - Inline quality encoding detection over records
+
+- Hypothesis: avoid temporary `[][]byte` allocation in `Compress` quality-encoding detection.
+- Change:
+  - Replaced `encoder.DetectEncoding(qualities)` setup with direct scan over `Record.Quality`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.15-4.20 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.5-39.2 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.24-4.25 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.1-39.5 ms/op
+- Result: no meaningful win; main compression benchmark regressed.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E005 - Replace looped stream writes with direct writes
+
+- Hypothesis: avoid small temporary `[][]byte` allocation in `compressBlockWithBuffers`.
+- Change:
+  - Replaced `for _, data := range [][]byte{...}` write loop with five direct `w.Write(...)` calls.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.18-4.21 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.3-39.8 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.25-4.29 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.9-39.5 ms/op
+- Result: mixed/neutral but `BenchmarkCompress` regressed.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E006 - Use fixed `[5][]byte` instead of `[][]byte` for block stream buffers
+
+- Hypothesis: remove one small slice-header allocation per block in decompression job setup.
+- Change:
+  - `decompressJob.compressed` changed to `[5][]byte`.
+  - `produceDecompressJobs` and `readAndDecompressBlock` switched temporary stream buffers to arrays.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.18-4.20 ms/op
+  - `BenchmarkDecompress`: ~2.13-2.15 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.21-4.23 ms/op
+  - `BenchmarkDecompress`: ~2.15-2.17 ms/op
+- Result: slight regressions on primary benchmarks.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E007 - Disable zstd decoder low-memory mode
+
+- Hypothesis: `WithDecoderLowmem(false)` may improve decode throughput at the cost of memory.
+- Change:
+  - Added `zstd.WithDecoderLowmem(false)` to shared decoder options.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.20-4.23 ms/op
+  - `BenchmarkDecompress`: ~2.15-2.16 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.26-4.30 ms/op
+  - `BenchmarkDecompress`: ~2.17-2.18 ms/op
+- Result: throughput regressed on both paths.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E008 - Single-block fast path for small inputs
+
+- Hypothesis: if `firstBatch.Len() < BlockSize`, input fits in one block and parallel pipeline overhead is unnecessary.
+- Change:
+  - `Compress` now routes to `compressSingleWorkerWithBatch` when:
+    - `opts.Workers == 1`, or
+    - `firstBatch.Len() < int(opts.BlockSize)`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.16-4.25 ms/op, 149-156 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.6-39.0 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.04-4.06 ms/op, 63-66 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.9-39.2 ms/op
+- Result: strong win for small/single-block compression, no meaningful regression in parallel block benchmark.
+- Decision: **accepted**.
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.

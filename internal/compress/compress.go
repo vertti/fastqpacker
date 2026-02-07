@@ -162,8 +162,9 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 		return fmt.Errorf("writing file header: %w", err)
 	}
 
-	// Single worker path (simpler, no goroutine overhead)
-	if opts.Workers == 1 {
+	// Single worker path (simpler, no goroutine overhead).
+	// If the first batch is smaller than block size, input fits in one block.
+	if opts.Workers == 1 || firstBatch.Len() < int(opts.BlockSize) {
 		return compressSingleWorkerWithBatch(firstBatch, p, w, qualEncoding, firstBatchEOF)
 	}
 
