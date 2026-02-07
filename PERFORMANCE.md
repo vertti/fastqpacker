@@ -351,6 +351,22 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: decompression throughput regressed.
 - Decision: **discarded** (change reverted).
 
+### 2026-02-07 - E021 - Compression prefetch of second batch to detect exact one-block inputs
+
+- Hypothesis: when first batch exactly equals block size, pre-reading the next batch allows one-block files to bypass parallel overhead.
+- Change:
+  - `Compress` now reads one additional batch when entering parallel path.
+  - If the second batch is empty+EOF, compression falls back to single-worker path.
+  - If non-empty, second batch is passed as a prefetched batch into producer.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.13-4.18 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.7-41.5 ms/op, 154-219 allocs/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.07-4.18 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.3-39.1 ms/op, 72-97 allocs/op
+- Result: clear win on exact-one-block parallel benchmark and large allocation drop with no regressions in other core benches.
+- Decision: **accepted**.
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.

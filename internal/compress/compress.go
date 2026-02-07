@@ -168,7 +168,22 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 		return compressSingleWorkerWithBatch(firstBatch, p, w, qualEncoding, firstBatchEOF)
 	}
 
-	return compressParallelWithBatch(firstBatch, p, w, opts, qualEncoding, firstBatchEOF)
+	// If first batch filled the block exactly, peek one more batch to detect
+	// exact-one-block inputs and to seed the parallel pipeline.
+	secondBatch := batchPool.Get().(*parser.RecordBatch) //nolint:errcheck // pool always returns *RecordBatch
+	err = p.ReadBatch(secondBatch)
+	secondBatchEOF := errors.Is(err, io.EOF)
+	if err != nil && !secondBatchEOF {
+		batchPool.Put(firstBatch)
+		batchPool.Put(secondBatch)
+		return fmt.Errorf("parsing FASTQ: %w", err)
+	}
+	if secondBatch.Len() == 0 {
+		batchPool.Put(secondBatch)
+		return compressSingleWorkerWithBatch(firstBatch, p, w, qualEncoding, true)
+	}
+
+	return compressParallelWithBatch(firstBatch, p, w, opts, qualEncoding, firstBatchEOF, []*parser.RecordBatch{secondBatch}, secondBatchEOF)
 }
 
 func compressSingleWorkerWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
@@ -217,7 +232,7 @@ func compressSingleWorkerWithBatch(firstBatch *parser.RecordBatch, p *parser.Par
 	return nil
 }
 
-func compressParallelWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool) error {
+func compressParallelWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool, prefetched []*parser.RecordBatch, stopAfterPrefetched bool) error {
 	jobs := make(chan compressJob, opts.Workers*2)
 	results := make(chan compressResult, opts.Workers*2)
 
@@ -233,7 +248,7 @@ func compressParallelWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser,
 	// Producer: dispatch first batch and continue parsing
 	g.Go(func() error {
 		defer close(jobs)
-		return produceCompressJobs(ctx, jobs, firstBatch, p, firstBatchEOF)
+		return produceCompressJobs(ctx, jobs, firstBatch, p, prefetched, firstBatchEOF, stopAfterPrefetched)
 	})
 
 	// Collector: write results in order
@@ -280,7 +295,7 @@ func runCompressionWorker(ctx context.Context, jobs <-chan compressJob, results 
 	return nil
 }
 
-func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatch *parser.RecordBatch, p *parser.Parser, firstBatchEOF bool) error {
+func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatch *parser.RecordBatch, p *parser.Parser, prefetched []*parser.RecordBatch, firstBatchEOF bool, stopAfterPrefetched bool) error {
 	seqNum := 0
 
 	// Send first batch if present
@@ -294,6 +309,20 @@ func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatc
 		}
 	} else {
 		batchPool.Put(firstBatch)
+	}
+
+	for _, batch := range prefetched {
+		select {
+		case jobs <- compressJob{seqNum: seqNum, records: batch.Records[:batch.Len()], batch: batch}:
+			seqNum++
+		case <-ctx.Done():
+			batchPool.Put(batch)
+			return ctx.Err()
+		}
+	}
+
+	if stopAfterPrefetched {
+		return nil
 	}
 
 	if firstBatchEOF {
