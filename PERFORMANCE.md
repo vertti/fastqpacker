@@ -554,3 +554,21 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `TestCompressDecompress_LargeBatch` ratio dropped from ~381.36x to ~260.76x.
 - Result: speed improved, but compression ratio regressed substantially.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E033 - Disable zstd frame CRC (`WithEncoderCRC(false)`)
+
+- Hypothesis: skipping per-frame checksum emission can reduce compression overhead.
+- Change:
+  - Added `zstd.WithEncoderCRC(false)` to encoder options.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.94-3.95 ms/op
+  - `BenchmarkDecompress`: ~2.00-2.02 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.1-38.0 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.87-3.90 ms/op
+  - `BenchmarkDecompress`: ~1.95-1.99 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.0-37.2 ms/op
+- Additional check:
+  - `TestCompressDecompress_LargeBatch` ratio improved from ~381.36x to ~390.82x.
+- Result: speed improved, but this removes frame-level checksum validation.
+- Decision: **discarded** (reverted due integrity requirements for genomic data).
