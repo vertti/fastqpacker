@@ -501,3 +501,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.4-38.2 ms/op
 - Result: clear decompression regression and slight compression regression.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E030 - Use `bytes.Buffer.WriteTo` in decompression fast paths
+
+- Hypothesis: replacing `w.Write(buf.Bytes())` with `buf.WriteTo(w)` in decompression output paths may reduce write overhead.
+- Change:
+  - `decompressSinglePrefetchedJob`: `buf.WriteTo(w)` instead of `w.Write(buf.Bytes())`.
+  - `decompressBlockToWriter`: `buf.WriteTo(w)` instead of `w.Write(buf.Bytes())`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.99-4.05 ms/op
+  - `BenchmarkDecompress`: ~2.08-2.09 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.2-37.9 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.07-4.13 ms/op
+  - `BenchmarkDecompress`: ~2.09-2.12 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.6-37.9 ms/op
+- Result: compression regressed with no compensating decompression win.
+- Decision: **discarded** (change reverted).
