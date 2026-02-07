@@ -401,6 +401,19 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: slower parser and much higher memory usage.
 - Decision: **discarded** (change reverted).
 
-## Notes
+### 2026-02-07 - E024 - Pre-size pending maps in result collectors
 
-- Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
+- Hypothesis: pre-sizing small pending maps may reduce map growth/rehash overhead in ordered result collection.
+- Change:
+  - `collectAndWriteResults`: `make(map[int]*blockBuffers, 16)`
+  - `collectAndWriteDecompressResults`: `make(map[int]*bytes.Buffer, 16)`
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.05-4.10 ms/op
+  - `BenchmarkDecompress`: ~2.06-2.10 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.8-38.5 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.98-4.05 ms/op
+  - `BenchmarkDecompress`: ~2.08-2.10 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.4-38.0 ms/op
+- Result: small compression-side improvement (especially parallel) with neutral decompression impact and minimal complexity.
+- Decision: **accepted**.

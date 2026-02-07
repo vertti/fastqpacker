@@ -358,7 +358,7 @@ func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatc
 }
 
 func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
-	pending := make(map[int]*blockBuffers)
+	pending := make(map[int]*blockBuffers, 16)
 	nextSeqNum := 0
 
 	for result := range results {
@@ -398,7 +398,7 @@ func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
 }
 
 func collectAndWriteDecompressResults(results <-chan decompressResult, w io.Writer) error {
-	pending := make(map[int]*bytes.Buffer)
+	pending := make(map[int]*bytes.Buffer, 16)
 	nextSeqNum := 0
 
 	for result := range results {
