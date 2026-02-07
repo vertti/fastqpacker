@@ -324,6 +324,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: no measurable compression gain on current benches and noisy/negative overall.
 - Decision: **discarded** (change reverted).
 
+### 2026-02-07 - E019 - Pool temporary quality slice used for encoding detection
+
+- Hypothesis: avoid `make([][]byte, firstBatch.Len())` allocation in `Compress` by reusing a pooled slice.
+- Change:
+  - Added `qualitySlicePool` and reused slice storage before calling `encoder.DetectEncoding`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.08-4.16 ms/op, 65 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.6-41.0 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.05-4.13 ms/op, 60-66 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.2-39.5 ms/op
+- Result: marginal/noisy improvement with extra global pool state.
+- Decision: **discarded** (change reverted).
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
