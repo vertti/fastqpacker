@@ -308,6 +308,22 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: no clear throughput win; effectively neutral with run-to-run variance.
 - Decision: **discarded** (change reverted).
 
+### 2026-02-07 - E018 - Route compression to single worker when `firstBatchEOF` is true
+
+- Hypothesis: catch exact-one-full-block inputs (`firstBatch.Len() == BlockSize`) and bypass parallel overhead.
+- Change:
+  - `Compress` condition changed from `opts.Workers == 1 || firstBatch.Len() < int(opts.BlockSize)` to include `firstBatchEOF`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.13-4.16 ms/op
+  - `BenchmarkDecompress`: ~2.12-2.13 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.6-41.0 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.09-4.15 ms/op
+  - `BenchmarkDecompress`: ~2.47-2.48 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.5-40.2 ms/op
+- Result: no measurable compression gain on current benches and noisy/negative overall.
+- Decision: **discarded** (change reverted).
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
