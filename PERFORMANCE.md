@@ -624,3 +624,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `workers*2`: ~38.27, 38.03, 37.96, 37.75, 38.02 ms/op
 - Result: no reliable parallel gain versus current `workers*2`.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E037 - Add `bufio.Writer` buffering in result collectors
+
+- Hypothesis: buffered writes in collectors may reduce output-write overhead.
+- Change:
+  - Wrapped collector writes with `bufio.NewWriterSize(..., 1<<20)` when writer is not already buffered.
+  - Added final flush step in both collectors.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.88-3.95 ms/op
+  - `BenchmarkDecompress`: ~1.96-1.98 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.6-38.3 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.89-3.94 ms/op
+  - `BenchmarkDecompress`: ~1.99-2.00 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.9-38.1 ms/op
+- Result: no compression win; slight decompression/parallel regressions.
+- Decision: **discarded** (change reverted).
