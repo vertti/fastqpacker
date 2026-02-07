@@ -233,8 +233,8 @@ func compressSingleWorkerWithBatch(firstBatch *parser.RecordBatch, p *parser.Par
 }
 
 func compressParallelWithBatch(firstBatch *parser.RecordBatch, p *parser.Parser, w io.Writer, opts *Options, qualEncoding encoder.QualityEncoding, firstBatchEOF bool, prefetched []*parser.RecordBatch, stopAfterPrefetched bool) error {
-	jobs := make(chan compressJob, opts.Workers*2)
-	results := make(chan compressResult, opts.Workers*2)
+	jobs := make(chan compressJob, opts.Workers)
+	results := make(chan compressResult, opts.Workers)
 
 	g, ctx := errgroup.WithContext(ctx())
 
@@ -601,8 +601,8 @@ func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.Quali
 }
 
 func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding encoder.QualityEncoding, prefetched []decompressJob) error {
-	jobs := make(chan decompressJob, workers*2)
-	results := make(chan decompressResult, workers*2)
+	jobs := make(chan decompressJob, workers)
+	results := make(chan decompressResult, workers)
 
 	g, ctx := errgroup.WithContext(ctx())
 

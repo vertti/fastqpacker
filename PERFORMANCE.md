@@ -434,3 +434,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~38.1-38.6 ms/op
 - Result: slight but consistent regression on compression and parallel throughput.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E026 - Reduce parallel jobs/results channel depth (`*2` -> `*1`)
+
+- Hypothesis: shallower channels may reduce queueing and memory pressure in parallel pipelines.
+- Change:
+  - `compressParallelWithBatch`: jobs/results capacities changed from `opts.Workers*2` to `opts.Workers`.
+  - `decompressParallel`: jobs/results capacities changed from `workers*2` to `workers`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.99-4.08 ms/op
+  - `BenchmarkDecompress`: ~2.108-2.126 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.4-37.8 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.01-4.03 ms/op
+  - `BenchmarkDecompress`: ~2.021-2.047 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.3-37.6 ms/op
+- Result: clear decompression improvement with neutral-to-slightly-better compression/parallel throughput.
+- Decision: **accepted**.
