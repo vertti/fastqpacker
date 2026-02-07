@@ -367,6 +367,26 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: clear win on exact-one-block parallel benchmark and large allocation drop with no regressions in other core benches.
 - Decision: **accepted**.
 
+### 2026-02-07 - E022 - Parser `ReadSlice('\n')` fast path with fallback
+
+- Hypothesis: `bufio.Reader.ReadSlice('\n')` fast path can reduce per-line parsing overhead vs `ReadLine` loop for typical FASTQ line lengths.
+- Change:
+  - `internal/parser/parser.go` `readLine` now uses:
+    - fast path: `ReadSlice('\n')` + manual newline/CR trim
+    - fallback: accumulate segments only when `bufio.ErrBufferFull`.
+- Before (3 runs):
+  - `BenchmarkReadBatch`: ~662-668 us/op
+  - `BenchmarkParser`: ~1.25-1.30 ms/op
+  - `BenchmarkCompress`: ~4.11-4.17 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.4-38.8 ms/op
+- After (3 runs):
+  - `BenchmarkReadBatch`: ~595-598 us/op
+  - `BenchmarkParser`: ~1.06-1.10 ms/op
+  - `BenchmarkCompress`: ~4.06-4.10 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.2-39.0 ms/op
+- Result: strong parser speedup and small compression-path improvement without regressions.
+- Decision: **accepted**.
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
