@@ -536,3 +536,21 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `TestCompressDecompress_LargeBatch` ratio moved from ~388.41x to ~381.36x.
 - Result: strong throughput improvement with a small observed compression-ratio decrease on the large-batch test fixture.
 - Decision: **accepted**.
+
+### 2026-02-07 - E032 - Enable `zstd.WithNoEntropyCompression(true)` with `SpeedFastest`
+
+- Hypothesis: skipping literal entropy compression may provide additional throughput gains.
+- Change:
+  - Added `zstd.WithNoEntropyCompression(true)` to `zstdEncoderOptions`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.96-3.97 ms/op
+  - `BenchmarkDecompress`: ~1.99-2.01 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.3-38.6 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.85-3.94 ms/op
+  - `BenchmarkDecompress`: ~1.99-2.00 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~36.9-37.6 ms/op
+- Additional check:
+  - `TestCompressDecompress_LargeBatch` ratio dropped from ~381.36x to ~260.76x.
+- Result: speed improved, but compression ratio regressed substantially.
+- Decision: **discarded** (change reverted).
