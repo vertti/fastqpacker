@@ -604,3 +604,23 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.9-38.2 ms/op
 - Result: decompression regressed significantly and parallel throughput did not improve.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E036 - Increase compression channel depth to `workers*3`
+
+- Hypothesis: slightly deeper compression job/result channels may reduce producer/worker backpressure.
+- Change:
+  - `compressParallelWithBatch`: channel capacities from `opts.Workers*2` to `opts.Workers*3`.
+  - `decompressParallel` unchanged (`workers`).
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.98-3.99 ms/op
+  - `BenchmarkDecompress`: ~2.02-2.04 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.7-37.9 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.91-3.96 ms/op
+  - `BenchmarkDecompress`: ~1.98-2.01 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.8-38.2 ms/op
+- Validation (`BenchmarkCompressParallel/workers=8`, count=5):
+  - `workers*3`: ~37.69, 38.64, 37.97, 37.99, 38.30 ms/op
+  - `workers*2`: ~38.27, 38.03, 37.96, 37.75, 38.02 ms/op
+- Result: no reliable parallel gain versus current `workers*2`.
+- Decision: **discarded** (change reverted).
