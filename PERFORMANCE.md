@@ -417,3 +417,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.4-38.0 ms/op
 - Result: small compression-side improvement (especially parallel) with neutral decompression impact and minimal complexity.
 - Decision: **accepted**.
+
+### 2026-02-07 - E025 - Use `bytes.Buffer.WriteTo` in result collectors
+
+- Hypothesis: replacing `w.Write(buf.Bytes())` with `buf.WriteTo(w)` may lower collector write overhead.
+- Change:
+  - `collectAndWriteResults`: write block bytes via `bufs.outputBuf.WriteTo(w)`.
+  - `collectAndWriteDecompressResults`: write block bytes via `buf.WriteTo(w)`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.99-4.06 ms/op
+  - `BenchmarkDecompress`: ~2.059-2.064 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.5-38.3 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.05-4.11 ms/op
+  - `BenchmarkDecompress`: ~2.070-2.076 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.1-38.6 ms/op
+- Result: slight but consistent regression on compression and parallel throughput.
+- Decision: **discarded** (change reverted).
