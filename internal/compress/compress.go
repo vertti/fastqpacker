@@ -87,7 +87,7 @@ type compressJob struct {
 // compressResult represents a compressed block.
 type compressResult struct {
 	seqNum int
-	data   []byte
+	bufs   *blockBuffers
 	err    error
 }
 
@@ -101,7 +101,7 @@ type decompressJob struct {
 // decompressResult represents a decompressed block.
 type decompressResult struct {
 	seqNum int
-	data   []byte
+	buf    *bytes.Buffer
 	err    error
 }
 
@@ -259,11 +259,11 @@ func runCompressionWorker(ctx context.Context, jobs <-chan compressJob, results 
 		default:
 		}
 
-		data, err := compressBlockToBytes(job.records, zstdEnc, qualEncoding)
+		bufs, err := compressBlockToPooledBuffer(job.records, zstdEnc, qualEncoding)
 		if job.batch != nil {
 			batchPool.Put(job.batch)
 		}
-		results <- compressResult{seqNum: job.seqNum, data: data, err: err}
+		results <- compressResult{seqNum: job.seqNum, bufs: bufs, err: err}
 	}
 	return nil
 }
@@ -317,25 +317,37 @@ func produceCompressJobs(ctx context.Context, jobs chan<- compressJob, firstBatc
 }
 
 func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
-	pending := make(map[int][]byte)
+	pending := make(map[int]*blockBuffers)
 	nextSeqNum := 0
 
 	for result := range results {
 		if result.err != nil {
+			if result.bufs != nil {
+				blockBufferPool.Put(result.bufs)
+			}
+			for _, bufs := range pending {
+				blockBufferPool.Put(bufs)
+			}
 			return fmt.Errorf("compressing block %d: %w", result.seqNum, result.err)
 		}
 
-		pending[result.seqNum] = result.data
+		pending[result.seqNum] = result.bufs
 
 		// Write all sequential results available
 		for {
-			data, ok := pending[nextSeqNum]
+			bufs, ok := pending[nextSeqNum]
 			if !ok {
 				break
 			}
-			if _, err := w.Write(data); err != nil {
+			if _, err := w.Write(bufs.outputBuf.Bytes()); err != nil {
+				blockBufferPool.Put(bufs)
+				delete(pending, nextSeqNum)
+				for _, pendingBufs := range pending {
+					blockBufferPool.Put(pendingBufs)
+				}
 				return fmt.Errorf("writing block %d: %w", nextSeqNum, err)
 			}
+			blockBufferPool.Put(bufs)
 			delete(pending, nextSeqNum)
 			nextSeqNum++
 		}
@@ -345,25 +357,37 @@ func collectAndWriteResults(results <-chan compressResult, w io.Writer) error {
 }
 
 func collectAndWriteDecompressResults(results <-chan decompressResult, w io.Writer) error {
-	pending := make(map[int][]byte)
+	pending := make(map[int]*bytes.Buffer)
 	nextSeqNum := 0
 
 	for result := range results {
 		if result.err != nil {
+			if result.buf != nil {
+				decompBufPool.Put(result.buf)
+			}
+			for _, buf := range pending {
+				decompBufPool.Put(buf)
+			}
 			return fmt.Errorf("decompressing block %d: %w", result.seqNum, result.err)
 		}
 
-		pending[result.seqNum] = result.data
+		pending[result.seqNum] = result.buf
 
 		// Write all sequential results available
 		for {
-			data, ok := pending[nextSeqNum]
+			buf, ok := pending[nextSeqNum]
 			if !ok {
 				break
 			}
-			if _, err := w.Write(data); err != nil {
+			if _, err := w.Write(buf.Bytes()); err != nil {
+				decompBufPool.Put(buf)
+				delete(pending, nextSeqNum)
+				for _, pendingBuf := range pending {
+					decompBufPool.Put(pendingBuf)
+				}
 				return fmt.Errorf("writing block %d: %w", nextSeqNum, err)
 			}
+			decompBufPool.Put(buf)
 			delete(pending, nextSeqNum)
 			nextSeqNum++
 		}
@@ -377,19 +401,17 @@ func ctx() context.Context {
 	return context.Background()
 }
 
-// compressBlockToBytes compresses a block and returns the serialized bytes.
-func compressBlockToBytes(records []parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
+// compressBlockToPooledBuffer compresses a block and returns a pooled buffer.
+// Caller must return the buffer to blockBufferPool when done.
+func compressBlockToPooledBuffer(records []parser.Record, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) (*blockBuffers, error) {
 	bufs := blockBufferPool.Get().(*blockBuffers) //nolint:errcheck // pool always returns *blockBuffers
 	bufs.reset()
-	defer blockBufferPool.Put(bufs)
 
 	if err := compressBlockWithBuffers(records, &bufs.outputBuf, zstdEnc, qualEncoding, bufs); err != nil {
+		blockBufferPool.Put(bufs)
 		return nil, err
 	}
-	// Copy output so the pooled buffer can be reused
-	out := make([]byte, bufs.outputBuf.Len())
-	copy(out, bufs.outputBuf.Bytes())
-	return out, nil
+	return bufs, nil
 }
 
 func compressBlock(records []parser.Record, w io.Writer, zstdEnc *zstd.Encoder, qualEncoding encoder.QualityEncoding) error {
@@ -574,8 +596,8 @@ func runDecompressionWorker(ctx context.Context, jobs <-chan decompressJob, resu
 		default:
 		}
 
-		data, err := decompressJobToBytes(job, zstdDec, qualEncoding)
-		results <- decompressResult{seqNum: job.seqNum, data: data, err: err}
+		buf, err := decompressJobToPooledBuffer(job, zstdDec, qualEncoding)
+		results <- decompressResult{seqNum: job.seqNum, buf: buf, err: err}
 	}
 	return nil
 }
@@ -615,7 +637,7 @@ func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompr
 	}
 }
 
-func decompressJobToBytes(job decompressJob, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) ([]byte, error) {
+func decompressJobToPooledBuffer(job decompressJob, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) (*bytes.Buffer, error) {
 	// Decompress each stream
 	seqData, err := zstdDec.DecodeAll(job.compressed[0], nil)
 	if err != nil {
@@ -657,12 +679,7 @@ func decompressJobToBytes(job decompressJob, zstdDec *zstd.Decoder, qualEncoding
 			return nil, err
 		}
 	}
-
-	// Copy output so the pooled buffer can be reused
-	out := make([]byte, buf.Len())
-	copy(out, buf.Bytes())
-	decompBufPool.Put(buf)
-	return out, nil
+	return buf, nil
 }
 
 // blockData holds decompressed data for a block.
