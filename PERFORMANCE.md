@@ -387,6 +387,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: strong parser speedup and small compression-path improvement without regressions.
 - Decision: **accepted**.
 
+### 2026-02-07 - E023 - Increase parser reader buffer from 1MB to 4MB
+
+- Hypothesis: larger read buffer may reduce reader overhead and improve parsing/compression throughput.
+- Change:
+  - `internal/parser/parser.go` `New`: `bufio.NewReaderSize(..., 1<<20)` -> `4<<20`.
+- Before (3 runs):
+  - `BenchmarkReadBatch`: ~593-601 us/op, ~1.57 MB/op
+  - `BenchmarkParser`: ~1.065-1.093 ms/op, ~5.37 MB/op
+- After (3 runs):
+  - `BenchmarkReadBatch`: ~637-638 us/op, ~4.72 MB/op
+  - `BenchmarkParser`: ~1.131-1.178 ms/op, ~8.52 MB/op
+- Result: slower parser and much higher memory usage.
+- Decision: **discarded** (change reverted).
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
