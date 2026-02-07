@@ -468,3 +468,19 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.2-37.7 ms/op
 - Result: small but consistent improvement across compression and parallel benchmarks, with decompression still improved vs earlier baseline.
 - Decision: **accepted**.
+
+### 2026-02-07 - E028 - Use fixed `[5][]byte` for compressed stream write loop
+
+- Hypothesis: avoid per-block overhead from the `[][]byte` literal in compressed stream write loop.
+- Change:
+  - `compressBlockWithBuffers`: replaced `for _, data := range [][]byte{...}` with a fixed array and loop.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.05-4.08 ms/op
+  - `BenchmarkDecompress`: ~2.06-2.09 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.8-38.2 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.97-4.08 ms/op
+  - `BenchmarkDecompress`: ~2.12-2.13 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.6-37.8 ms/op
+- Result: mixed/neutral with no robust overall gain.
+- Decision: **discarded** (change reverted).
