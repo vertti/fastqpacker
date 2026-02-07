@@ -84,7 +84,20 @@ func DeltaEncode(qual []byte) {
 	}
 
 	// Encode backwards to allow in-place operation
-	for i := len(qual) - 1; i > 0; i-- {
+	i := len(qual) - 1
+	for ; i >= 8; i -= 8 {
+		qual[i] -= qual[i-1]
+		qual[i-1] -= qual[i-2]
+		qual[i-2] -= qual[i-3]
+		qual[i-3] -= qual[i-4]
+		qual[i-4] -= qual[i-5]
+		qual[i-5] -= qual[i-6]
+		qual[i-6] -= qual[i-7]
+		qual[i-7] -= qual[i-8]
+	}
+
+	// Handle remaining bytes
+	for ; i > 0; i-- {
 		qual[i] -= qual[i-1]
 	}
 }
@@ -96,7 +109,10 @@ func DeltaDecode(qual []byte) {
 		return
 	}
 
+	// Use accumulator to avoid memory dependency chain
+	acc := qual[0]
 	for i := 1; i < len(qual); i++ {
-		qual[i] += qual[i-1]
+		acc += qual[i]
+		qual[i] = acc
 	}
 }

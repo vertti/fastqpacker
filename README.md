@@ -16,7 +16,7 @@ Tested on ERR532393_1 (8.9GB Illumina reads), M4 MacBook Pro:
 
 | Tool | Size | Ratio | Compress | Decompress | Speed |
 |------|------|-------|----------|------------|-------|
-| **fqpack** | **2,826 MB** | **3.2x** | **3.3s** | **3s** | **2,922 MB/s** |
+| **fqpack** | **2,826 MB** | **3.3x** | **3.3s** | **3s** | **3,106 MB/s** |
 | DSRC | 2,150 MB | 4.1x | 12s | 18s | 742 MB/s |
 | zstd | 3,312 MB | 2.7x | 11s | 8s | 809 MB/s |
 | pigz | 3,278 MB | 2.7x | 79s | 12s | 113 MB/s |

@@ -1,7 +1,10 @@
 // Package encoder provides encoding functions for FASTQ components.
 package encoder
 
-import "slices"
+import (
+	"encoding/binary"
+	"slices"
+)
 
 // MaxSequenceLength is the maximum supported sequence length.
 // Sequences longer than this will be truncated for N position tracking.
@@ -10,6 +13,9 @@ const MaxSequenceLength = 1 << 16 // 65536
 // baseLookup maps ASCII byte to 2-bit encoding. A=0, C=1, G=2, T=3.
 // Unknown bases (including N) map to 0 (same as A).
 var baseLookup [256]byte
+
+// unpackLookupUint32 maps packed byte to 4 ASCII bases packed in a uint32 (little endian).
+var unpackLookupUint32 [256]uint32
 
 // isNBase maps ASCII byte to 1 if it's an N/ambiguous base, 0 otherwise.
 var isNBase [256]byte
@@ -24,6 +30,16 @@ func init() {
 	baseLookup['g'] = 2
 	baseLookup['T'] = 3
 	baseLookup['t'] = 3
+
+	// Initialize unpack lookup table
+	bases := [4]byte{'A', 'C', 'G', 'T'}
+	for i := 0; i < 256; i++ {
+		b0 := bases[i&0x03]      //nolint:gosec // bounds checked by mask
+		b1 := bases[(i>>2)&0x03] //nolint:gosec // bounds checked by mask
+		b2 := bases[(i>>4)&0x03] //nolint:gosec // bounds checked by mask
+		b3 := bases[(i>>6)&0x03] //nolint:gosec // bounds checked by mask
+		unpackLookupUint32[i] = uint32(b0) | (uint32(b1) << 8) | (uint32(b2) << 16) | (uint32(b3) << 24)
+	}
 
 	// Mark all bytes as N by default, then clear known bases
 	for i := range isNBase {
@@ -92,15 +108,12 @@ func UnpackBases(packed []byte, nPos []uint16, seqLen int) []byte {
 	seq := make([]byte, seqLen)
 	bases := [4]byte{'A', 'C', 'G', 'T'}
 
-	// Process 4 bases at a time
+	// Process 4 bases at a time using lookup table
 	fullBytes := seqLen >> 2
 	for i := 0; i < fullBytes; i++ {
 		b := packed[i]
 		base := i << 2
-		seq[base] = bases[b&0x03]
-		seq[base+1] = bases[(b>>2)&0x03]
-		seq[base+2] = bases[(b>>4)&0x03]
-		seq[base+3] = bases[(b>>6)&0x03]
+		binary.LittleEndian.PutUint32(seq[base:], unpackLookupUint32[b])
 	}
 
 	// Handle remaining 1-3 bases
@@ -183,15 +196,12 @@ func AppendUnpackBases(dst []byte, packed []byte, nPos []uint16, seqLen int) []b
 
 	bases := [4]byte{'A', 'C', 'G', 'T'}
 
-	// Process 4 bases at a time
+	// Process 4 bases at a time using lookup table
 	fullBytes := seqLen >> 2
 	for i := 0; i < fullBytes; i++ {
 		b := packed[i]
 		base := i << 2
-		seq[base] = bases[b&0x03]
-		seq[base+1] = bases[(b>>2)&0x03]
-		seq[base+2] = bases[(b>>4)&0x03]
-		seq[base+3] = bases[(b>>6)&0x03]
+		binary.LittleEndian.PutUint32(seq[base:], unpackLookupUint32[b])
 	}
 
 	// Handle remaining 1-3 bases
