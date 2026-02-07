@@ -484,3 +484,20 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.6-37.8 ms/op
 - Result: mixed/neutral with no robust overall gain.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E029 - Pre-grow decompression output buffer from block metadata
+
+- Hypothesis: pre-sizing pooled output buffers using per-block metadata may reduce buffer growth/realloc overhead during FASTQ reconstruction.
+- Change:
+  - Added FASTQ output-size estimator using `NumRecords`, `OriginalSeqSize`, `OriginalQualSize`, and decoded header stream length.
+  - Applied `buf.Grow(...)` in `decompressJobToPooledBuffer` and `decompressBlockToWriter`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.99-4.01 ms/op
+  - `BenchmarkDecompress`: ~2.08-2.09 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.8-38.1 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.07-4.13 ms/op
+  - `BenchmarkDecompress`: ~2.14-2.18 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.4-38.2 ms/op
+- Result: clear decompression regression and slight compression regression.
+- Decision: **discarded** (change reverted).
