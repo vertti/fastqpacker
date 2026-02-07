@@ -218,6 +218,96 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: strong decompression improvement and major allocation reduction with no meaningful regressions.
 - Decision: **accepted**.
 
+### 2026-02-07 - E012 - Replace collector pending maps with slice windows
+
+- Hypothesis: reduce map overhead in ordered result collectors by using a compact slice window keyed by `seqNum-nextSeqNum`.
+- Change:
+  - Rewrote `collectAndWriteResults` and `collectAndWriteDecompressResults` to use slice windows and explicit order checks.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.10-4.20 ms/op
+  - `BenchmarkDecompress`: ~2.08-2.09 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.2-40.1 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.10-4.14 ms/op
+  - `BenchmarkDecompress`: ~2.10-2.14 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.4-39.6 ms/op
+- Result: mixed and effectively neutral; slight decompression regression and added code complexity.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E013 - Use one contiguous backing allocation for compressed block streams
+
+- Hypothesis: reduce per-block allocation count in stream reads by allocating one backing byte slice and carving 5 stream slices from it.
+- Change:
+  - `readCompressedStreams` switched from 5 independent `make([]byte, size)` calls to one `make([]byte, totalSize)` plus slicing.
+- Before (3 runs):
+  - `BenchmarkDecompress`: ~2.105-2.128 ms/op, 39-40 allocs/op
+- After (3 runs, plus 5-run validation):
+  - `BenchmarkDecompress`: ~2.110-2.129 ms/op (3-run), ~2.154-2.222 ms/op (5-run), 35-36 allocs/op
+- Result: allocation count improved, but no consistent throughput gain (possible slight slowdown).
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E014 - Use separate `SpeedFastest` encoder for metadata streams
+
+- Hypothesis: compress `headers`, `N positions`, and `lengths` with faster zstd level while keeping sequence/quality at default.
+- Change:
+  - Added per-worker second encoder (`SpeedFastest`) for metadata streams.
+  - Updated compression block functions to accept distinct data/metadata encoders.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.06-4.13 ms/op, 64-67 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.6-40.0 ms/op, 151-166 allocs/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.15-4.22 ms/op, 96-99 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~40.1-40.6 ms/op, 245-255 allocs/op
+- Result: clear compression regression and significant allocation increase.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E015 - Rewrite N-position serialization with pre-grown writes
+
+- Hypothesis: reduce per-record overhead in sequence metadata serialization by writing N-count and positions into one pre-grown chunk.
+- Change:
+  - Replaced repeated `binary.LittleEndian.AppendUint16` calls with `slices.Grow` + `PutUint16` writes in-place.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.08-4.11 ms/op
+  - `BenchmarkCompressBlock`: ~19.25-19.31 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.5-39.7 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.12-4.17 ms/op
+  - `BenchmarkCompressBlock`: ~19.56-19.78 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.8-40.5 ms/op
+- Result: consistent compression-side regression.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E016 - Enable `zstd.WithLowerEncoderMem(true)`
+
+- Hypothesis: lower zstd encoder memory mode may reduce memory pressure and improve throughput.
+- Change:
+  - Added `zstd.WithLowerEncoderMem(true)` to shared encoder options.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.09-4.12 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.0-39.9 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.97-4.03 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~48.1-50.2 ms/op
+- Result: severe regression for parallel compression despite minor single-block gain.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E017 - Increase parallel job/result channel depth (`*2` -> `*4`)
+
+- Hypothesis: deeper channels might reduce scheduler backpressure in parallel compression/decompression pipelines.
+- Change:
+  - `compressParallelWithBatch`: jobs/results channel capacities from `workers*2` to `workers*4`.
+  - `decompressParallel`: jobs/results channel capacities from `workers*2` to `workers*4`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.07-4.10 ms/op
+  - `BenchmarkDecompress`: ~2.07-2.10 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.5-39.9 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.07-4.14 ms/op
+  - `BenchmarkDecompress`: ~2.08-2.11 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.3-40.4 ms/op
+- Result: no clear throughput win; effectively neutral with run-to-run variance.
+- Decision: **discarded** (change reverted).
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
