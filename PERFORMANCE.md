@@ -588,3 +588,19 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~38.1-38.4 ms/op
 - Result: decompression and parallel throughput regressed materially.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E035 - Set zstd window size to `2<<20` with `SpeedFastest`
+
+- Hypothesis: moderately smaller window than default-for-fastest (`4<<20`) might improve speed without heavy ratio impact.
+- Change:
+  - Added `zstd.WithWindowSize(2 << 20)` to encoder options.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.93-3.94 ms/op
+  - `BenchmarkDecompress`: ~1.97-1.99 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.6-38.0 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.84-3.90 ms/op
+  - `BenchmarkDecompress`: ~2.07-2.08 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.9-38.2 ms/op
+- Result: decompression regressed significantly and parallel throughput did not improve.
+- Decision: **discarded** (change reverted).
