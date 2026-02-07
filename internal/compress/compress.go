@@ -527,7 +527,24 @@ func Decompress(r io.Reader, w io.Writer, opts *DecompressOptions) error {
 		return decompressSingleWorker(r, w, qualEncoding)
 	}
 
-	return decompressParallel(r, w, opts.Workers, qualEncoding)
+	// Prefetch first block. If there is only one block, avoid parallel overhead.
+	firstJob, firstEOF, err := readNextDecompressJob(r, 0)
+	if err != nil {
+		return err
+	}
+	if firstEOF {
+		return nil
+	}
+
+	secondJob, secondEOF, err := readNextDecompressJob(r, 1)
+	if err != nil {
+		return err
+	}
+	if secondEOF {
+		return decompressSinglePrefetchedJob(firstJob, w, qualEncoding)
+	}
+
+	return decompressParallel(r, w, opts.Workers, qualEncoding, []decompressJob{firstJob, secondJob})
 }
 
 func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.QualityEncoding) error {
@@ -554,7 +571,7 @@ func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.Quali
 	return nil
 }
 
-func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding encoder.QualityEncoding) error {
+func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding encoder.QualityEncoding, prefetched []decompressJob) error {
 	jobs := make(chan decompressJob, workers*2)
 	results := make(chan decompressResult, workers*2)
 
@@ -570,7 +587,7 @@ func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding enco
 	// Producer: read blocks and dispatch
 	g.Go(func() error {
 		defer close(jobs)
-		return produceDecompressJobs(ctx, r, jobs)
+		return produceDecompressJobs(ctx, r, jobs, prefetched)
 	})
 
 	// Collector: write results in order
@@ -614,39 +631,88 @@ func runDecompressionWorker(ctx context.Context, jobs <-chan decompressJob, resu
 	return nil
 }
 
-func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompressJob) error {
+func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompressJob, prefetched []decompressJob) error {
 	seqNum := 0
+
+	for i := range prefetched {
+		job := prefetched[i]
+		select {
+		case jobs <- job:
+			seqNum = job.seqNum + 1
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	for {
-		blockHeader, err := format.ReadBlockHeader(r)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
+		job, eof, err := readNextDecompressJob(r, seqNum)
 		if err != nil {
-			return fmt.Errorf("reading block header: %w", err)
+			return err
 		}
-
-		// Read all compressed data for this block
-		compressed := [][]byte{
-			make([]byte, blockHeader.SeqDataSize),
-			make([]byte, blockHeader.QualDataSize),
-			make([]byte, blockHeader.HeaderDataSize),
-			make([]byte, blockHeader.NPositionsSize),
-			make([]byte, blockHeader.SeqLengthsSize),
-		}
-
-		for _, buf := range compressed {
-			if _, err := io.ReadFull(r, buf); err != nil {
-				return fmt.Errorf("reading compressed data: %w", err)
-			}
+		if eof {
+			return nil
 		}
 
 		select {
-		case jobs <- decompressJob{seqNum: seqNum, header: blockHeader, compressed: compressed}:
+		case jobs <- job:
 			seqNum++
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+func readNextDecompressJob(r io.Reader, seqNum int) (decompressJob, bool, error) {
+	blockHeader, err := format.ReadBlockHeader(r)
+	if errors.Is(err, io.EOF) {
+		return decompressJob{}, true, nil
+	}
+	if err != nil {
+		return decompressJob{}, false, fmt.Errorf("reading block header: %w", err)
+	}
+
+	compressed, err := readCompressedStreams(r, blockHeader)
+	if err != nil {
+		return decompressJob{}, false, fmt.Errorf("reading compressed data: %w", err)
+	}
+
+	return decompressJob{seqNum: seqNum, header: blockHeader, compressed: compressed}, false, nil
+}
+
+func readCompressedStreams(r io.Reader, header *format.BlockHeader) ([][]byte, error) {
+	compressed := [][]byte{
+		make([]byte, header.SeqDataSize),
+		make([]byte, header.QualDataSize),
+		make([]byte, header.HeaderDataSize),
+		make([]byte, header.NPositionsSize),
+		make([]byte, header.SeqLengthsSize),
+	}
+	for _, buf := range compressed {
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+	}
+	return compressed, nil
+}
+
+func decompressSinglePrefetchedJob(job decompressJob, w io.Writer, qualEncoding encoder.QualityEncoding) error {
+	zstdDec, err := zstd.NewReader(nil, zstdDecoderOptions...)
+	if err != nil {
+		return fmt.Errorf("creating zstd decoder: %w", err)
+	}
+	defer zstdDec.Close()
+
+	buf, err := decompressJobToPooledBuffer(job, zstdDec, qualEncoding)
+	if err != nil {
+		return fmt.Errorf("decompressing block %d: %w", job.seqNum, err)
+	}
+
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		decompBufPool.Put(buf)
+		return fmt.Errorf("writing block %d: %w", job.seqNum, err)
+	}
+	decompBufPool.Put(buf)
+	return nil
 }
 
 func decompressJobToPooledBuffer(job decompressJob, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) (*bytes.Buffer, error) {
@@ -747,18 +813,9 @@ func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Write
 
 func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zstd.Decoder) (*blockData, error) {
 	// Read compressed data
-	buffers := [][]byte{
-		make([]byte, header.SeqDataSize),
-		make([]byte, header.QualDataSize),
-		make([]byte, header.HeaderDataSize),
-		make([]byte, header.NPositionsSize),
-		make([]byte, header.SeqLengthsSize),
-	}
-
-	for _, buf := range buffers {
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
-		}
+	buffers, err := readCompressedStreams(r, header)
+	if err != nil {
+		return nil, err
 	}
 
 	// Decompress each stream

@@ -163,6 +163,61 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
 - Result: strong win for small/single-block compression, no meaningful regression in parallel block benchmark.
 - Decision: **accepted**.
 
+### 2026-02-07 - E009 - Pool per-block compressed input buffers in parallel decompression
+
+- Hypothesis: reuse the 5 compressed stream input buffers per block to reduce allocations and GC churn in parallel decompression.
+- Change:
+  - Added `compressedBlockBuffers` + `compressedBlockPool`.
+  - Changed `decompressJob.compressed` from `[][]byte` to pooled struct.
+  - Producer now resizes pooled streams and returns buffers on read/context errors.
+  - Worker returns pooled buffers after decode.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.99-4.07 ms/op, 63-67 allocs/op
+  - `BenchmarkDecompress`: ~2.17-2.20 ms/op, 175 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.4-40.3 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.02-4.08 ms/op, 64-66 allocs/op
+  - `BenchmarkDecompress`: ~2.17-2.18 ms/op, 173 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.6-39.7 ms/op
+- Result: decompression allocations improved slightly, but throughput remained neutral and some key compression benches were slightly worse.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E010 - Reuse `DecodeAll` destination buffers per decompression worker
+
+- Hypothesis: avoid per-block allocations by reusing decode destination slices (`seq`, `qual`, `headers`, `nPos`, `lengths`) in each worker.
+- Change:
+  - Added worker-local decode scratch buffers.
+  - `decompressJobToPooledBuffer` switched from `DecodeAll(src, nil)` to `DecodeAll(src, scratch[:0])`.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.84-3.86 ms/op
+  - `BenchmarkDecompress`: ~2.05-2.07 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.1-38.2 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.05-4.11 ms/op
+  - `BenchmarkDecompress`: ~2.26-2.28 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.2-39.4 ms/op
+- Result: consistent regression on core throughput metrics.
+- Decision: **discarded** (change reverted).
+
+### 2026-02-07 - E011 - Prefetch first two blocks in decompression and short-circuit one-block files
+
+- Hypothesis: avoid parallel worker/channel/map overhead when compressed input contains only one block.
+- Change:
+  - `Decompress` now prefetches first block (and attempts second) using `readNextDecompressJob`.
+  - If second block is EOF, decode the prefetched first block directly with `decompressSinglePrefetchedJob`.
+  - If second block exists, continue parallel pipeline with prefetched jobs and resume streaming remaining blocks.
+  - Added `readCompressedStreams` helper and reused it in block reading paths.
+- Before (3 runs):
+  - `BenchmarkCompress`: ~4.13-4.14 ms/op
+  - `BenchmarkDecompress`: ~2.21-2.22 ms/op, 174-175 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~39.0-39.9 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~4.05 ms/op
+  - `BenchmarkDecompress`: ~2.06-2.09 ms/op, 39-40 allocs/op
+  - `BenchmarkCompressParallel/workers=8`: ~38.9-39.2 ms/op
+- Result: strong decompression improvement and major allocation reduction with no meaningful regressions.
+- Decision: **accepted**.
+
 ## Notes
 
 - Existing uncommitted changes in `internal/compress/compress.go` were present before this session and should be evaluated separately with the same protocol.
