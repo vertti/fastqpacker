@@ -28,10 +28,12 @@ type blockBuffers struct {
 	seqLengths []byte
 	quality    []byte
 	headers    []byte
+	plusLines  []byte
 	// Reusable destination slices for zstd EncodeAll
 	compSeq     []byte
 	compQual    []byte
 	compHeaders []byte
+	compPlus    []byte
 	compNPos    []byte
 	compLen     []byte
 	outputBuf   bytes.Buffer
@@ -55,9 +57,11 @@ func (b *blockBuffers) reset() {
 	b.seqLengths = b.seqLengths[:0]
 	b.quality = b.quality[:0]
 	b.headers = b.headers[:0]
+	b.plusLines = b.plusLines[:0]
 	b.compSeq = b.compSeq[:0]
 	b.compQual = b.compQual[:0]
 	b.compHeaders = b.compHeaders[:0]
+	b.compPlus = b.compPlus[:0]
 	b.compNPos = b.compNPos[:0]
 	b.compLen = b.compLen[:0]
 	b.outputBuf.Reset()
@@ -94,8 +98,9 @@ type compressResult struct {
 // decompressJob represents a block to be decompressed.
 type decompressJob struct {
 	seqNum     int
+	version    uint8
 	header     *format.BlockHeader
-	compressed [][]byte // 5 compressed streams: seq, qual, headers, nPos, lengths
+	compressed [][]byte // v1: 5 streams, v2: 6 streams (adds plus-line payload)
 }
 
 // decompressResult represents a decompressed block.
@@ -150,7 +155,7 @@ func Compress(r io.Reader, w io.Writer, opts *Options) error {
 
 	// Write file header with encoding flag
 	header := format.FileHeader{
-		Version:   1,
+		Version:   format.CurrentVersion,
 		BlockSize: opts.BlockSize,
 		Flags:     0,
 	}
@@ -495,12 +500,17 @@ func compressBlockWithBuffers(records []parser.Record, w io.Writer, zstdEnc *zst
 		// Store header with length prefix
 		bufs.headers = binary.LittleEndian.AppendUint16(bufs.headers, uint16(len(rec.Header))) //nolint:gosec // bounded
 		bufs.headers = append(bufs.headers, rec.Header...)
+
+		// Store plus-line payload with length prefix (without leading '+')
+		bufs.plusLines = binary.LittleEndian.AppendUint16(bufs.plusLines, uint16(len(rec.PlusLine))) //nolint:gosec // bounded
+		bufs.plusLines = append(bufs.plusLines, rec.PlusLine...)
 	}
 
 	// Compress each stream with zstd, reusing destination slices
 	bufs.compSeq = zstdEnc.EncodeAll(bufs.seqPacked, bufs.compSeq[:0])
 	bufs.compQual = zstdEnc.EncodeAll(bufs.quality, bufs.compQual[:0])
 	bufs.compHeaders = zstdEnc.EncodeAll(bufs.headers, bufs.compHeaders[:0])
+	bufs.compPlus = zstdEnc.EncodeAll(bufs.plusLines, bufs.compPlus[:0])
 	bufs.compNPos = zstdEnc.EncodeAll(bufs.nPositions, bufs.compNPos[:0])
 	bufs.compLen = zstdEnc.EncodeAll(bufs.seqLengths, bufs.compLen[:0])
 
@@ -511,17 +521,18 @@ func compressBlockWithBuffers(records []parser.Record, w io.Writer, zstdEnc *zst
 		SeqDataSize:      uint32(len(bufs.compSeq)),
 		QualDataSize:     uint32(len(bufs.compQual)),
 		HeaderDataSize:   uint32(len(bufs.compHeaders)),
+		PlusDataSize:     uint32(len(bufs.compPlus)),
 		NPositionsSize:   uint32(len(bufs.compNPos)),
 		SeqLengthsSize:   uint32(len(bufs.compLen)),
 		OriginalSeqSize:  originalSeqSize,
 		OriginalQualSize: originalQualSize,
 	}
-	if err := blockHeader.Write(w); err != nil {
+	if err := blockHeader.Write(w, format.CurrentVersion); err != nil {
 		return err
 	}
 
 	// Write compressed data
-	for _, data := range [][]byte{bufs.compSeq, bufs.compQual, bufs.compHeaders, bufs.compNPos, bufs.compLen} {
+	for _, data := range [][]byte{bufs.compSeq, bufs.compQual, bufs.compHeaders, bufs.compPlus, bufs.compNPos, bufs.compLen} {
 		if _, err := w.Write(data); err != nil {
 			return err
 		}
@@ -544,6 +555,9 @@ func Decompress(r io.Reader, w io.Writer, opts *DecompressOptions) error {
 	if err != nil {
 		return fmt.Errorf("reading file header: %w", err)
 	}
+	if fileHeader.Version != format.Version1 && fileHeader.Version != format.Version2 {
+		return fmt.Errorf("unsupported file version: %d", fileHeader.Version)
+	}
 
 	// Determine quality encoding from flags
 	qualEncoding := encoder.EncodingPhred33
@@ -553,11 +567,11 @@ func Decompress(r io.Reader, w io.Writer, opts *DecompressOptions) error {
 
 	// Single worker path
 	if opts.Workers == 1 {
-		return decompressSingleWorker(r, w, qualEncoding)
+		return decompressSingleWorker(r, w, qualEncoding, fileHeader.Version)
 	}
 
 	// Prefetch first block. If there is only one block, avoid parallel overhead.
-	firstJob, firstEOF, err := readNextDecompressJob(r, 0)
+	firstJob, firstEOF, err := readNextDecompressJob(r, 0, fileHeader.Version)
 	if err != nil {
 		return err
 	}
@@ -565,7 +579,7 @@ func Decompress(r io.Reader, w io.Writer, opts *DecompressOptions) error {
 		return nil
 	}
 
-	secondJob, secondEOF, err := readNextDecompressJob(r, 1)
+	secondJob, secondEOF, err := readNextDecompressJob(r, 1, fileHeader.Version)
 	if err != nil {
 		return err
 	}
@@ -573,10 +587,10 @@ func Decompress(r io.Reader, w io.Writer, opts *DecompressOptions) error {
 		return decompressSinglePrefetchedJob(firstJob, w, qualEncoding)
 	}
 
-	return decompressParallel(r, w, opts.Workers, qualEncoding, []decompressJob{firstJob, secondJob})
+	return decompressParallel(r, w, opts.Workers, qualEncoding, fileHeader.Version, []decompressJob{firstJob, secondJob})
 }
 
-func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.QualityEncoding) error {
+func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.QualityEncoding, version uint8) error {
 	zstdDec, err := zstd.NewReader(nil, zstdDecoderOptions...)
 	if err != nil {
 		return fmt.Errorf("creating zstd decoder: %w", err)
@@ -584,7 +598,7 @@ func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.Quali
 	defer zstdDec.Close()
 
 	for {
-		blockHeader, err := format.ReadBlockHeader(r)
+		blockHeader, err := format.ReadBlockHeader(r, version)
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -592,7 +606,7 @@ func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.Quali
 			return fmt.Errorf("reading block header: %w", err)
 		}
 
-		if err := decompressBlockToWriter(blockHeader, r, w, zstdDec, qualEncoding); err != nil {
+		if err := decompressBlockToWriter(blockHeader, r, w, zstdDec, qualEncoding, version); err != nil {
 			return fmt.Errorf("decompressing block: %w", err)
 		}
 	}
@@ -600,7 +614,7 @@ func decompressSingleWorker(r io.Reader, w io.Writer, qualEncoding encoder.Quali
 	return nil
 }
 
-func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding encoder.QualityEncoding, prefetched []decompressJob) error {
+func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding encoder.QualityEncoding, version uint8, prefetched []decompressJob) error {
 	jobs := make(chan decompressJob, workers)
 	results := make(chan decompressResult, workers)
 
@@ -616,7 +630,7 @@ func decompressParallel(r io.Reader, w io.Writer, workers int, qualEncoding enco
 	// Producer: read blocks and dispatch
 	g.Go(func() error {
 		defer close(jobs)
-		return produceDecompressJobs(ctx, r, jobs, prefetched)
+		return produceDecompressJobs(ctx, r, jobs, prefetched, version)
 	})
 
 	// Collector: write results in order
@@ -660,7 +674,7 @@ func runDecompressionWorker(ctx context.Context, jobs <-chan decompressJob, resu
 	return nil
 }
 
-func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompressJob, prefetched []decompressJob) error {
+func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompressJob, prefetched []decompressJob, version uint8) error {
 	seqNum := 0
 
 	for i := range prefetched {
@@ -674,7 +688,7 @@ func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompr
 	}
 
 	for {
-		job, eof, err := readNextDecompressJob(r, seqNum)
+		job, eof, err := readNextDecompressJob(r, seqNum, version)
 		if err != nil {
 			return err
 		}
@@ -691,8 +705,8 @@ func produceDecompressJobs(ctx context.Context, r io.Reader, jobs chan<- decompr
 	}
 }
 
-func readNextDecompressJob(r io.Reader, seqNum int) (decompressJob, bool, error) {
-	blockHeader, err := format.ReadBlockHeader(r)
+func readNextDecompressJob(r io.Reader, seqNum int, version uint8) (decompressJob, bool, error) {
+	blockHeader, err := format.ReadBlockHeader(r, version)
 	if errors.Is(err, io.EOF) {
 		return decompressJob{}, true, nil
 	}
@@ -700,22 +714,28 @@ func readNextDecompressJob(r io.Reader, seqNum int) (decompressJob, bool, error)
 		return decompressJob{}, false, fmt.Errorf("reading block header: %w", err)
 	}
 
-	compressed, err := readCompressedStreams(r, blockHeader)
+	compressed, err := readCompressedStreams(r, blockHeader, version)
 	if err != nil {
 		return decompressJob{}, false, fmt.Errorf("reading compressed data: %w", err)
 	}
 
-	return decompressJob{seqNum: seqNum, header: blockHeader, compressed: compressed}, false, nil
+	return decompressJob{seqNum: seqNum, version: version, header: blockHeader, compressed: compressed}, false, nil
 }
 
-func readCompressedStreams(r io.Reader, header *format.BlockHeader) ([][]byte, error) {
-	compressed := [][]byte{
+func readCompressedStreams(r io.Reader, header *format.BlockHeader, version uint8) ([][]byte, error) {
+	compressed := make([][]byte, 0, 6)
+	compressed = append(compressed,
 		make([]byte, header.SeqDataSize),
 		make([]byte, header.QualDataSize),
 		make([]byte, header.HeaderDataSize),
+	)
+	if version >= format.Version2 {
+		compressed = append(compressed, make([]byte, header.PlusDataSize))
+	}
+	compressed = append(compressed,
 		make([]byte, header.NPositionsSize),
 		make([]byte, header.SeqLengthsSize),
-	}
+	)
 	for _, buf := range compressed {
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
@@ -745,6 +765,19 @@ func decompressSinglePrefetchedJob(job decompressJob, w io.Writer, qualEncoding 
 }
 
 func decompressJobToPooledBuffer(job decompressJob, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) (*bytes.Buffer, error) {
+	nPosIdx := 3
+	lenIdx := 4
+	var plusData []byte
+	if job.version >= format.Version2 {
+		plusDecoded, err := zstdDec.DecodeAll(job.compressed[3], nil)
+		if err != nil {
+			return nil, fmt.Errorf("decompressing plus-line payload: %w", err)
+		}
+		plusData = plusDecoded
+		nPosIdx = 4
+		lenIdx = 5
+	}
+
 	// Decompress each stream
 	seqData, err := zstdDec.DecodeAll(job.compressed[0], nil)
 	if err != nil {
@@ -758,11 +791,11 @@ func decompressJobToPooledBuffer(job decompressJob, zstdDec *zstd.Decoder, qualE
 	if err != nil {
 		return nil, fmt.Errorf("decompressing headers: %w", err)
 	}
-	nPosData, err := zstdDec.DecodeAll(job.compressed[3], nil)
+	nPosData, err := zstdDec.DecodeAll(job.compressed[nPosIdx], nil)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing N positions: %w", err)
 	}
-	lengthData, err := zstdDec.DecodeAll(job.compressed[4], nil)
+	lengthData, err := zstdDec.DecodeAll(job.compressed[lenIdx], nil)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing lengths: %w", err)
 	}
@@ -771,6 +804,7 @@ func decompressJobToPooledBuffer(job decompressJob, zstdDec *zstd.Decoder, qualE
 		seqData:    seqData,
 		qualData:   qualData,
 		headerData: headerData,
+		plusData:   plusData,
 		nPosData:   nPosData,
 		lengthData: lengthData,
 	}
@@ -794,6 +828,7 @@ type blockData struct {
 	seqData    []byte
 	qualData   []byte
 	headerData []byte
+	plusData   []byte
 	nPosData   []byte
 	lengthData []byte
 }
@@ -804,6 +839,7 @@ type blockReader struct {
 	seqOffset    int
 	qualOffset   int
 	headerOffset int
+	plusOffset   int
 	nPosOffset   int
 	lengthOffset int
 	qualEncoding encoder.QualityEncoding
@@ -818,8 +854,8 @@ var decompBufPool = sync.Pool{
 	},
 }
 
-func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Writer, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding) error {
-	data, err := readAndDecompressBlock(header, r, zstdDec)
+func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Writer, zstdDec *zstd.Decoder, qualEncoding encoder.QualityEncoding, version uint8) error {
+	data, err := readAndDecompressBlock(header, r, zstdDec, version)
 	if err != nil {
 		return err
 	}
@@ -840,11 +876,24 @@ func decompressBlockToWriter(header *format.BlockHeader, r io.Reader, w io.Write
 	return err
 }
 
-func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zstd.Decoder) (*blockData, error) {
+func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zstd.Decoder, version uint8) (*blockData, error) {
 	// Read compressed data
-	buffers, err := readCompressedStreams(r, header)
+	buffers, err := readCompressedStreams(r, header, version)
 	if err != nil {
 		return nil, err
+	}
+
+	nPosIdx := 3
+	lenIdx := 4
+	var plusData []byte
+	if version >= format.Version2 {
+		plusDecoded, decodeErr := zstdDec.DecodeAll(buffers[3], nil)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decompressing plus-line payload: %w", decodeErr)
+		}
+		plusData = plusDecoded
+		nPosIdx = 4
+		lenIdx = 5
 	}
 
 	// Decompress each stream
@@ -860,11 +909,11 @@ func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zs
 	if err != nil {
 		return nil, fmt.Errorf("decompressing headers: %w", err)
 	}
-	nPosData, err := zstdDec.DecodeAll(buffers[3], nil)
+	nPosData, err := zstdDec.DecodeAll(buffers[nPosIdx], nil)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing N positions: %w", err)
 	}
-	lengthData, err := zstdDec.DecodeAll(buffers[4], nil)
+	lengthData, err := zstdDec.DecodeAll(buffers[lenIdx], nil)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing lengths: %w", err)
 	}
@@ -873,6 +922,7 @@ func readAndDecompressBlock(header *format.BlockHeader, r io.Reader, zstdDec *zs
 		seqData:    seqData,
 		qualData:   qualData,
 		headerData: headerData,
+		plusData:   plusData,
 		nPosData:   nPosData,
 		lengthData: lengthData,
 	}, nil
@@ -899,9 +949,9 @@ func (br *blockReader) writeRecord(buf *bytes.Buffer) error {
 		return err
 	}
 
-	// Write "+\n"
-	buf.WriteByte('+')
-	buf.WriteByte('\n')
+	if err := br.appendPlusLine(buf); err != nil {
+		return err
+	}
 
 	// Append quality with in-place delta decode (safe: qualData is per-block)
 	if err := br.appendQuality(buf, seqLen); err != nil {
@@ -925,6 +975,29 @@ func (br *blockReader) appendHeader(buf *bytes.Buffer) error {
 	buf.Write(br.data.headerData[br.headerOffset : br.headerOffset+headerLen])
 	buf.WriteByte('\n')
 	br.headerOffset += headerLen
+	return nil
+}
+
+func (br *blockReader) appendPlusLine(buf *bytes.Buffer) error {
+	if len(br.data.plusData) == 0 {
+		buf.WriteByte('+')
+		buf.WriteByte('\n')
+		return nil
+	}
+
+	if br.plusOffset+2 > len(br.data.plusData) {
+		return errors.New("truncated plus-line payload data")
+	}
+	plusLen := int(binary.LittleEndian.Uint16(br.data.plusData[br.plusOffset : br.plusOffset+2]))
+	br.plusOffset += 2
+	if br.plusOffset+plusLen > len(br.data.plusData) {
+		return errors.New("truncated plus-line payload data")
+	}
+
+	buf.WriteByte('+')
+	buf.Write(br.data.plusData[br.plusOffset : br.plusOffset+plusLen])
+	buf.WriteByte('\n')
+	br.plusOffset += plusLen
 	return nil
 }
 

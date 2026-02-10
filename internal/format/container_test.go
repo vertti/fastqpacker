@@ -12,7 +12,7 @@ func TestFileHeader_WriteRead(t *testing.T) {
 	t.Parallel()
 
 	header := FileHeader{
-		Version:   1,
+		Version:   CurrentVersion,
 		BlockSize: 100000,
 		Flags:     FlagPairedEnd,
 	}
@@ -50,6 +50,7 @@ func TestBlockHeader_WriteRead(t *testing.T) {
 		SeqDataSize:      5000,
 		QualDataSize:     8000,
 		HeaderDataSize:   500,
+		PlusDataSize:     120,
 		NPositionsSize:   100,
 		SeqLengthsSize:   2000,
 		OriginalSeqSize:  20000,
@@ -57,12 +58,43 @@ func TestBlockHeader_WriteRead(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := block.Write(&buf)
+	err := block.Write(&buf, Version2)
 	require.NoError(t, err)
 
-	readBlock, err := ReadBlockHeader(&buf)
+	readBlock, err := ReadBlockHeader(&buf, Version2)
 	require.NoError(t, err)
 
+	assert.Equal(t, block.NumRecords, readBlock.NumRecords)
+	assert.Equal(t, block.SeqDataSize, readBlock.SeqDataSize)
+	assert.Equal(t, block.QualDataSize, readBlock.QualDataSize)
+	assert.Equal(t, block.HeaderDataSize, readBlock.HeaderDataSize)
+	assert.Equal(t, block.PlusDataSize, readBlock.PlusDataSize)
+	assert.Equal(t, block.NPositionsSize, readBlock.NPositionsSize)
+	assert.Equal(t, block.SeqLengthsSize, readBlock.SeqLengthsSize)
+}
+
+func TestBlockHeader_WriteRead_V1Compatibility(t *testing.T) {
+	t.Parallel()
+
+	block := BlockHeader{
+		NumRecords:       1000,
+		SeqDataSize:      5000,
+		QualDataSize:     8000,
+		HeaderDataSize:   500,
+		PlusDataSize:     120, // ignored in v1 wire format
+		NPositionsSize:   100,
+		SeqLengthsSize:   2000,
+		OriginalSeqSize:  20000,
+		OriginalQualSize: 20000,
+	}
+
+	var buf bytes.Buffer
+	err := block.Write(&buf, Version1)
+	require.NoError(t, err)
+
+	readBlock, err := ReadBlockHeader(&buf, Version1)
+	require.NoError(t, err)
+	assert.Zero(t, readBlock.PlusDataSize)
 	assert.Equal(t, block.NumRecords, readBlock.NumRecords)
 	assert.Equal(t, block.SeqDataSize, readBlock.SeqDataSize)
 	assert.Equal(t, block.QualDataSize, readBlock.QualDataSize)

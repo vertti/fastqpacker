@@ -641,3 +641,28 @@ GOCACHE=/tmp/fqpack-go-cache GOTMPDIR=/tmp /Users/vertti/.local/share/mise/insta
   - `BenchmarkCompressParallel/workers=8`: ~37.9-38.1 ms/op
 - Result: no compression win; slight decompression/parallel regressions.
 - Decision: **discarded** (change reverted).
+
+### 2026-02-10 - E038 - Preserve FASTQ line-3 payload (plus-line comments/IDs)
+
+- Hypothesis: storing plus-line payload in a new v2 stream fixes lossless round-trip for valid FASTQ with non-empty line 3, with acceptable performance impact.
+- Change:
+  - `internal/parser/parser.go`: parse and retain `Record.PlusLine` (line-3 payload without leading `+`).
+  - `internal/format/container.go`: add v2 format support (`CurrentVersion=2`) and `PlusDataSize` in block headers.
+  - `internal/compress/compress.go`: write/read plus-line payload stream in v2 while keeping v1 decode compatibility.
+  - Added tests:
+    - `TestCompressDecompress_PreservePlusLinePayload`
+    - `TestDecompress_V1Compatibility`
+- Before (3 runs):
+  - `BenchmarkCompress`: ~3.90-3.94 ms/op
+  - `BenchmarkDecompress`: ~2.02-2.15 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.0-37.8 ms/op
+  - `BenchmarkReadBatch`: ~596-601 us/op
+  - `BenchmarkParser`: ~1.14-1.18 ms/op
+- After (3 runs):
+  - `BenchmarkCompress`: ~3.95-4.13 ms/op
+  - `BenchmarkDecompress`: ~2.06-2.17 ms/op
+  - `BenchmarkCompressParallel/workers=8`: ~37.8-38.0 ms/op
+  - `BenchmarkReadBatch`: ~606-626 us/op
+  - `BenchmarkParser`: ~1.16-1.18 ms/op
+- Result: small throughput regression (mainly compression/read-batch path) but correctness gap is closed and v1 files remain readable.
+- Decision: **accepted** (correctness fix with documented performance tradeoff).

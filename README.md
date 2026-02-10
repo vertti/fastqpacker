@@ -68,6 +68,7 @@ fqpack -w 4 -i reads.fq -o reads.fqz
 - **Parallel block processing**: Scales across all CPU cores
 - **Built-in integrity verification**: CRC32 checksums detect corruption on decompress
 - **Auto-detected quality encoding**: Phred+33 and Phred+64 handled transparently
+- **Lossless FASTQ record preservation**: Optional line-3 plus payload (`+...`) is preserved
 
 ## Limitations
 

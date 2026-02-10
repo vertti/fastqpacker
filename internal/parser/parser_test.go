@@ -22,6 +22,7 @@ IIIIIIII
 
 	assert.Equal(t, []byte("SEQ_ID description"), rec.Header)
 	assert.Equal(t, []byte("ACGTACGT"), rec.Sequence)
+	assert.Empty(t, rec.PlusLine)
 	assert.Equal(t, []byte("IIIIIIII"), rec.Quality)
 }
 
@@ -56,6 +57,7 @@ $$$$
 		require.NoError(t, err)
 		assert.Equal(t, []byte(tt.header), rec.Header)
 		assert.Equal(t, []byte(tt.seq), rec.Sequence)
+		assert.Empty(t, rec.PlusLine)
 		assert.Equal(t, []byte(tt.qual), rec.Quality)
 	}
 
@@ -114,6 +116,19 @@ IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII
 	rec, err := p.Next()
 	require.NoError(t, err)
 	assert.Equal(t, []byte("HWI-ST123:4:1101:14346:1976#0/1"), rec.Header)
+	assert.Empty(t, rec.PlusLine)
+}
+
+func TestParsePlusLinePayload(t *testing.T) {
+	input := `@SEQ_1
+ACGTACGT
++SEQ_1 comment
+IIIIIIII
+`
+	p := New(strings.NewReader(input))
+	rec, err := p.Next()
+	require.NoError(t, err)
+	assert.Equal(t, []byte("SEQ_1 comment"), rec.PlusLine)
 }
 
 func TestParseBatch(t *testing.T) {
