@@ -570,13 +570,13 @@ func buildV1CompressedFastq(input string) ([]byte, error) {
 
 	blockHeader := format.BlockHeader{
 		NumRecords:       1,
-		SeqDataSize:      uint32(len(compSeq)),    //nolint:gosec // bounded in tests
-		QualDataSize:     uint32(len(compQual)),   //nolint:gosec // bounded in tests
-		HeaderDataSize:   uint32(len(compHeader)), //nolint:gosec // bounded in tests
-		NPositionsSize:   uint32(len(compNPos)),   //nolint:gosec // bounded in tests
-		SeqLengthsSize:   uint32(len(compLen)),    //nolint:gosec // bounded in tests
-		OriginalSeqSize:  uint32(len(rec.Sequence)),
-		OriginalQualSize: uint32(len(rec.Quality)),
+		SeqDataSize:      uint32(len(compSeq)),      //nolint:gosec // bounded in tests
+		QualDataSize:     uint32(len(compQual)),     //nolint:gosec // bounded in tests
+		HeaderDataSize:   uint32(len(compHeader)),   //nolint:gosec // bounded in tests
+		NPositionsSize:   uint32(len(compNPos)),     //nolint:gosec // bounded in tests
+		SeqLengthsSize:   uint32(len(compLen)),      //nolint:gosec // bounded in tests
+		OriginalSeqSize:  uint32(len(rec.Sequence)), //nolint:gosec // bounded in tests
+		OriginalQualSize: uint32(len(rec.Quality)),  //nolint:gosec // bounded in tests
 	}
 	if err := blockHeader.Write(&out, format.Version1); err != nil {
 		return nil, err
