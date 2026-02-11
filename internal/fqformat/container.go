@@ -1,5 +1,5 @@
-// Package format defines the FQZ file format for compressed FASTQ data.
-package format
+// Package fqformat defines the FQZ file format for compressed FASTQ data.
+package fqformat
 
 import (
 	"encoding/binary"

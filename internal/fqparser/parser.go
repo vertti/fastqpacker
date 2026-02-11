@@ -1,5 +1,5 @@
-// Package parser provides fast FASTQ file parsing.
-package parser
+// Package fqparser provides fast FASTQ file parsing.
+package fqparser
 
 import (
 	"bufio"

@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vertti/fastqpacker/internal/encoder"
-	"github.com/vertti/fastqpacker/internal/format"
-	"github.com/vertti/fastqpacker/internal/parser"
+	"github.com/vertti/fastqpacker/internal/fqformat"
+	"github.com/vertti/fastqpacker/internal/fqparser"
 )
 
 func TestCompressDecompress_SingleRecord(t *testing.T) {
@@ -517,19 +517,19 @@ IIIIIIII
 }
 
 func buildV1CompressedFastq(input string) ([]byte, error) {
-	p := parser.New(strings.NewReader(input))
+	p := fqparser.New(strings.NewReader(input))
 	rec, err := p.Next()
 	if err != nil {
 		return nil, err
 	}
 
 	qualEnc := encoder.DetectEncoding([][]byte{rec.Quality})
-	header := format.FileHeader{
-		Version:   format.Version1,
+	header := fqformat.FileHeader{
+		Version:   fqformat.Version1,
 		BlockSize: 1,
 	}
 	if qualEnc == encoder.EncodingPhred64 {
-		header.Flags |= format.FlagPhred64
+		header.Flags |= fqformat.FlagPhred64
 	}
 
 	var out bytes.Buffer
@@ -568,7 +568,7 @@ func buildV1CompressedFastq(input string) ([]byte, error) {
 	compNPos := zstdEnc.EncodeAll(nPosStream, nil)
 	compLen := zstdEnc.EncodeAll(lenStream, nil)
 
-	blockHeader := format.BlockHeader{
+	blockHeader := fqformat.BlockHeader{
 		NumRecords:       1,
 		SeqDataSize:      uint32(len(compSeq)),      //nolint:gosec // bounded in tests
 		QualDataSize:     uint32(len(compQual)),     //nolint:gosec // bounded in tests
@@ -578,7 +578,7 @@ func buildV1CompressedFastq(input string) ([]byte, error) {
 		OriginalSeqSize:  uint32(len(rec.Sequence)), //nolint:gosec // bounded in tests
 		OriginalQualSize: uint32(len(rec.Quality)),  //nolint:gosec // bounded in tests
 	}
-	if err := blockHeader.Write(&out, format.Version1); err != nil {
+	if err := blockHeader.Write(&out, fqformat.Version1); err != nil {
 		return nil, err
 	}
 
@@ -598,9 +598,9 @@ func BenchmarkCompressBlock(b *testing.B) {
 	header := []byte("HWI-ST123:4:1101:14346:1976#0/1")
 
 	const numRecords = 100000
-	records := make([]parser.Record, numRecords)
+	records := make([]fqparser.Record, numRecords)
 	for i := range records {
-		records[i] = parser.Record{
+		records[i] = fqparser.Record{
 			Header:   header,
 			Sequence: seq,
 			Quality:  qual,
