@@ -11,6 +11,7 @@ import (
 type Record struct {
 	Header   []byte // Header line without the leading '@'
 	Sequence []byte // DNA sequence (A, C, G, T, N)
+	PlusLine []byte // Plus line payload without leading '+'
 	Quality  []byte // Quality scores (Phred+33 encoded)
 }
 
@@ -86,6 +87,7 @@ func (p *Parser) Next() (*Record, error) {
 	if len(line) == 0 || line[0] != '+' {
 		return nil, errors.New("invalid FASTQ: separator line must start with +")
 	}
+	rec.PlusLine = append(rec.PlusLine[:0], line[1:]...)
 
 	// Line 4: Quality scores
 	line, err = p.readLine()
@@ -153,7 +155,7 @@ func (p *Parser) nextInto(rec *Record, dataBuf []byte) ([]byte, error) {
 	dataBuf = append(dataBuf, line...)
 	rec.Sequence = dataBuf[seqStart:len(dataBuf):len(dataBuf)]
 
-	// Line 3: Plus line (we ignore it)
+	// Line 3: Plus line payload (without leading '+')
 	line, err = p.readLine()
 	if err != nil {
 		return dataBuf, err
@@ -161,6 +163,9 @@ func (p *Parser) nextInto(rec *Record, dataBuf []byte) ([]byte, error) {
 	if len(line) == 0 || line[0] != '+' {
 		return dataBuf, errors.New("invalid FASTQ: separator line must start with +")
 	}
+	plusStart := len(dataBuf)
+	dataBuf = append(dataBuf, line[1:]...)
+	rec.PlusLine = dataBuf[plusStart:len(dataBuf):len(dataBuf)]
 
 	// Line 4: Quality scores — carve from backing buffer
 	line, err = p.readLine()

@@ -2,6 +2,7 @@ package compress
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/vertti/fastqpacker/internal/encoder"
+	"github.com/vertti/fastqpacker/internal/format"
 	"github.com/vertti/fastqpacker/internal/parser"
 )
 
@@ -67,6 +69,29 @@ func TestCompressDecompress_WithNBases(t *testing.T) {
 ACNTNACGTNNNNACGT
 +
 IIIIIIIIIIIIIIIII
+`
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.NoError(t, err)
+
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, input, decompressed.String())
+}
+
+func TestCompressDecompress_PreservePlusLinePayload(t *testing.T) {
+	t.Parallel()
+
+	input := `@SEQ_1
+ACGTACGT
++SEQ_1 optional comment
+IIIIIIII
+@SEQ_2
+TTTTGGGG
++
+HHHHHHHH
 `
 	var compressed bytes.Buffer
 	err := Compress(strings.NewReader(input), &compressed, nil)
@@ -472,6 +497,98 @@ IIIIIIIIIIIIIIII
 	require.NoError(t, err)
 
 	assert.Equal(t, input, decompressed.String())
+}
+
+func TestDecompress_V1Compatibility(t *testing.T) {
+	t.Parallel()
+
+	input := `@SEQ_1
+ACGTACGT
++
+IIIIIIII
+`
+	v1Data, err := buildV1CompressedFastq(input)
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	err = Decompress(bytes.NewReader(v1Data), &out, nil)
+	require.NoError(t, err)
+	assert.Equal(t, input, out.String())
+}
+
+func buildV1CompressedFastq(input string) ([]byte, error) {
+	p := parser.New(strings.NewReader(input))
+	rec, err := p.Next()
+	if err != nil {
+		return nil, err
+	}
+
+	qualEnc := encoder.DetectEncoding([][]byte{rec.Quality})
+	header := format.FileHeader{
+		Version:   format.Version1,
+		BlockSize: 1,
+	}
+	if qualEnc == encoder.EncodingPhred64 {
+		header.Flags |= format.FlagPhred64
+	}
+
+	var out bytes.Buffer
+	if err := header.Write(&out); err != nil {
+		return nil, err
+	}
+
+	zstdEnc, err := zstd.NewWriter(nil, zstdEncoderOptions...)
+	if err != nil {
+		return nil, err
+	}
+	defer zstdEnc.Close() //nolint:errcheck
+
+	seqPacked, nPos := encoder.PackBases(rec.Sequence)
+
+	nPosStream := make([]byte, 0, 2+len(nPos)*2)
+	nPosStream = binary.LittleEndian.AppendUint16(nPosStream, uint16(len(nPos))) //nolint:gosec // bounded in tests
+	for _, pos := range nPos {
+		nPosStream = binary.LittleEndian.AppendUint16(nPosStream, pos)
+	}
+
+	lenStream := make([]byte, 0, 4)
+	lenStream = binary.LittleEndian.AppendUint32(lenStream, uint32(len(rec.Sequence))) //nolint:gosec // bounded in tests
+
+	qualNorm := append([]byte(nil), rec.Quality...)
+	encoder.NormalizeQuality(qualNorm, qualEnc)
+	encoder.DeltaEncode(qualNorm)
+
+	headerStream := make([]byte, 0, 2+len(rec.Header))
+	headerStream = binary.LittleEndian.AppendUint16(headerStream, uint16(len(rec.Header))) //nolint:gosec // bounded in tests
+	headerStream = append(headerStream, rec.Header...)
+
+	compSeq := zstdEnc.EncodeAll(seqPacked, nil)
+	compQual := zstdEnc.EncodeAll(qualNorm, nil)
+	compHeader := zstdEnc.EncodeAll(headerStream, nil)
+	compNPos := zstdEnc.EncodeAll(nPosStream, nil)
+	compLen := zstdEnc.EncodeAll(lenStream, nil)
+
+	blockHeader := format.BlockHeader{
+		NumRecords:       1,
+		SeqDataSize:      uint32(len(compSeq)),      //nolint:gosec // bounded in tests
+		QualDataSize:     uint32(len(compQual)),     //nolint:gosec // bounded in tests
+		HeaderDataSize:   uint32(len(compHeader)),   //nolint:gosec // bounded in tests
+		NPositionsSize:   uint32(len(compNPos)),     //nolint:gosec // bounded in tests
+		SeqLengthsSize:   uint32(len(compLen)),      //nolint:gosec // bounded in tests
+		OriginalSeqSize:  uint32(len(rec.Sequence)), //nolint:gosec // bounded in tests
+		OriginalQualSize: uint32(len(rec.Quality)),  //nolint:gosec // bounded in tests
+	}
+	if err := blockHeader.Write(&out, format.Version1); err != nil {
+		return nil, err
+	}
+
+	for _, stream := range [][]byte{compSeq, compQual, compHeader, compNPos, compLen} {
+		if _, err := out.Write(stream); err != nil {
+			return nil, err
+		}
+	}
+
+	return out.Bytes(), nil
 }
 
 func BenchmarkCompressBlock(b *testing.B) {
