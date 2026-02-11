@@ -3,5 +3,11 @@
   "extends": [
     "config:recommended"
   ],
-  "mode": "full"
+  "mode": "full",
+  "packageRules": [
+    {
+      "groupName": "go toolchain",
+      "matchPackageNames": ["go", "golangci-lint"]
+    }
+  ]
 }
