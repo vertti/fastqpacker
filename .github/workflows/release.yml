@@ -30,6 +30,9 @@ jobs:
           GOOS=darwin GOARCH=amd64 go build -ldflags "$LDFLAGS" -o fqpack-darwin-amd64 ./cmd/fqpack
           GOOS=darwin GOARCH=arm64 go build -ldflags "$LDFLAGS" -o fqpack-darwin-arm64 ./cmd/fqpack
 
+      - name: Generate checksums
+        run: sha256sum fqpack-* > checksums.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -38,4 +41,5 @@ jobs:
             fqpack-linux-arm64
             fqpack-darwin-amd64
             fqpack-darwin-arm64
+            checksums.txt
           generate_release_notes: true
