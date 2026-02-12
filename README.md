@@ -33,11 +33,20 @@ Re-run fqpack-only 9GB benchmark:
 
 ## Installation
 
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap vertti/tap
+brew install fastqpacker
+```
+
+### Shell script
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vertti/fastqpacker/main/install.sh | sh
 ```
 
-Or with Go:
+### Go
 
 ```bash
 go install github.com/vertti/fastqpacker/cmd/fqpack@latest
