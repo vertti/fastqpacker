@@ -119,8 +119,6 @@ func TestOpenInputDecompressModeDoesNotAutoGunzip(t *testing.T) {
 }
 
 func TestOpenInputStdinGzipMagicDetection(t *testing.T) {
-	t.Parallel()
-
 	want := []byte("@r1\nACGT\n+\n!!!!\n")
 	pr, pw, err := os.Pipe()
 	if err != nil {
