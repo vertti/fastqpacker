@@ -3,10 +3,13 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/vertti/fastqpacker/internal/compress"
 )
@@ -37,7 +40,7 @@ func run() int {
 		return exitSuccess
 	}
 
-	input, cleanup, err := openInput(cfg.inputFile)
+	input, cleanup, err := openInput(cfg.inputFile, cfg.decompress)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return exitError
@@ -110,22 +113,64 @@ Options:
 	fmt.Fprintf(os.Stderr, `
 Examples:
   fqpack -i sample.fq -o sample.fqz          Compress file
+  fqpack -i sample.fastq.gz -o sample.fqz    Compress gzip input
   fqpack -d -i sample.fqz -o sample.fq       Decompress file
   cat sample.fq | fqpack -c > sample.fqz     Compress from stdin
   fqpack -d < sample.fqz > sample.fq         Decompress to stdout
 `)
 }
 
-func openInput(path string) (io.Reader, func(), error) {
+func openInput(path string, decompress bool) (io.Reader, func(), error) {
 	if path == "" || path == "-" {
-		return os.Stdin, func() {}, nil
+		if decompress {
+			return os.Stdin, func() {}, nil
+		}
+		return wrapInputMaybeGzip(path, os.Stdin, func() {})
 	}
 
 	f, err := os.Open(path) //nolint:gosec // CLI tool needs to open user-specified files
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot open input: %w", err)
 	}
-	return f, func() { _ = f.Close() }, nil
+	cleanup := func() { _ = f.Close() }
+	if decompress {
+		return f, cleanup, nil
+	}
+	return wrapInputMaybeGzip(path, f, cleanup)
+}
+
+func wrapInputMaybeGzip(path string, in io.Reader, closeInput func()) (io.Reader, func(), error) {
+	br := bufio.NewReaderSize(in, 1<<20)
+	hasGzipMagic, err := inputHasGzipMagic(br)
+	if err != nil {
+		closeInput()
+		return nil, nil, fmt.Errorf("cannot inspect input: %w", err)
+	}
+
+	if strings.HasSuffix(strings.ToLower(path), ".gz") || hasGzipMagic {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			closeInput()
+			return nil, nil, fmt.Errorf("cannot open gzip input: %w", err)
+		}
+		return gz, func() {
+			_ = gz.Close()
+			closeInput()
+		}, nil
+	}
+
+	return br, closeInput, nil
+}
+
+func inputHasGzipMagic(br *bufio.Reader) (bool, error) {
+	header, err := br.Peek(2)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		return false, err
+	}
+	return len(header) == 2 && header[0] == 0x1f && header[1] == 0x8b, nil
 }
 
 func openOutput(path string, toStdout bool) (io.Writer, func(), error) {

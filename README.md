@@ -49,6 +49,9 @@ go install github.com/vertti/fastqpacker/cmd/fqpack@latest
 # Compress
 fqpack -i reads.fq -o reads.fqz
 
+# Compress from gzipped FASTQ
+fqpack -i reads.fastq.gz -o reads.fqz
+
 # Decompress
 fqpack -d -i reads.fqz -o reads.fq
 
