@@ -66,7 +66,7 @@ func TestOpenInputGzipByMagicBytes(t *testing.T) {
 	gzPath := filepath.Join(tmpDir, "reads.fastq.gz")
 	writeGzipFile(t, gzPath, want)
 
-	rawGz, err := os.ReadFile(gzPath)
+	rawGz, err := os.ReadFile(gzPath) //nolint:gosec // test fixture path from t.TempDir
 	if err != nil {
 		t.Fatalf("read gzip fixture: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestOpenInputDecompressModeDoesNotAutoGunzip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reads.fastq.gz")
 	writeGzipFile(t, path, want)
 
-	rawGz, err := os.ReadFile(path)
+	rawGz, err := os.ReadFile(path) //nolint:gosec // test fixture path from t.TempDir
 	if err != nil {
 		t.Fatalf("read raw gzip: %v", err)
 	}
