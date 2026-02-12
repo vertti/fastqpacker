@@ -40,6 +40,12 @@ brew tap vertti/tap
 brew install fastqpacker
 ```
 
+### Bioconda
+
+```bash
+conda install -c bioconda fastqpacker
+```
+
 ### Shell script
 
 ```bash
