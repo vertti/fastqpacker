@@ -187,7 +187,7 @@ func BenchmarkDeltaDecode(b *testing.B) {
 	qual := make([]byte, 152)
 	qual[0] = 35
 	for i := 1; i < len(qual); i++ {
-		qual[i] = byte((i % 5) - 2) // small deltas
+		qual[i] = byte((i % 5) - 2) //nolint:gosec // intentional wrap for test delta values
 	}
 
 	b.ResetTimer()
