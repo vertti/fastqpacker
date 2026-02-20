@@ -12,7 +12,6 @@ Scope: Replace the previous milestone list with a PR-driven roadmap focused on c
 ## What FastQPacker Is Not (Yet)
 
 - Not full FASTQ dialect coverage (wrapped multi-line records are out of scope for now).
-- Not yet fully lossless for all valid FASTQ variants (line-3 payload preservation needs work).
 - Not yet hardened against malicious/corrupt containers with strict allocation guards.
 - Not optimized yet for ultra-long reads and very large N-position vectors.
 
@@ -22,6 +21,7 @@ Scope: Replace the previous milestone list with a PR-driven roadmap focused on c
 - Small PRs only: each PR should be independently releasable and verifiable.
 - No speculative optimization merges: benchmark before/after required.
 - Keep the speed advantage while removing silent data-risk paths.
+- No backward compatibility with old container versions. The tool has no users yet — just improve the format in place. Files produced by older versions should be re-compressed.
 
 ## Required Verification For Every PR
 
@@ -55,15 +55,13 @@ Every PR in this roadmap must include all of:
 
 ## Phase 0: Correctness And Data Safety (Do First)
 
-### PR-001: Preserve line-3 FASTQ payload
+### PR-001: Preserve line-3 FASTQ payload ✅ DONE
 - Value: Fix lossless round-trip for valid FASTQ where line 3 is `+<comment or id>`.
 - Scope:
   - Extend container format to store plus-line payload.
   - Preserve payload in decompress output.
-  - Keep backward compatibility for existing `.fqz`.
 - Tests:
   - Round-trip tests with non-empty plus-line payload.
-  - Compatibility tests for old files.
 - Bench:
   - Full required benchmark suite before/after.
 
@@ -82,7 +80,6 @@ Every PR in this roadmap must include all of:
 - Value: Remove the overflow limitation introduced in PR-002 by adding safe encoding.
 - Scope:
   - Replace `uint16`-bounded N position stream with long-read-safe representation.
-  - Version/flag strategy for backward compatibility.
 - Tests:
   - Round-trip tests for long reads with many N positions.
   - Fuzz/property tests for random long sequences.
@@ -124,7 +121,7 @@ Every PR in this roadmap must include all of:
 
 ## Phase 1: Interop And Operator UX
 
-### PR-007: Transparent `.gz` input support in `fqpack`
+### PR-007: Transparent `.gz` input support in `fqpack` ✅ DONE
 - Value: Remove common pipeline friction; most FASTQ arrives as gzip.
 - Scope:
   - Auto-detect gzip by extension and/or magic bytes.
