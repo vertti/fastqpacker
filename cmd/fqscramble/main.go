@@ -133,10 +133,10 @@ func scramble(r io.Reader, w io.Writer, rng *rand.Rand) error {
 			qual = line
 			scrambledSeq := shuffleString(seq, rng)
 
-			_, _ = fmt.Fprintln(bw, header)
-			_, _ = fmt.Fprintln(bw, scrambledSeq)
-			_, _ = fmt.Fprintln(bw, plus)
-			_, _ = fmt.Fprintln(bw, qual)
+			_, _ = fmt.Fprintln(bw, header)       //nolint:gosec // G705: not web output
+			_, _ = fmt.Fprintln(bw, scrambledSeq) //nolint:gosec // G705: not web output
+			_, _ = fmt.Fprintln(bw, plus)         //nolint:gosec // G705: not web output
+			_, _ = fmt.Fprintln(bw, qual)         //nolint:gosec // G705: not web output
 		}
 
 		lineNum++
