@@ -478,6 +478,19 @@ func compressBlockWithBuffers(records []fqparser.Record, w io.Writer, zstdEnc *z
 		bufs.nPosBuf = bufs.nPosBuf[:0]
 		bufs.seqPacked = encoder.AppendPackedBases(bufs.seqPacked, rec.Sequence, &bufs.nPosBuf)
 
+		// Fail if sequence exceeds N-position tracking limit and has ambiguous bases beyond it.
+		// N positions are stored as uint16, so positions beyond MaxSequenceLength are silently lost
+		// and would be reconstructed as A on decompression — silent data corruption.
+		if len(rec.Sequence) > encoder.MaxSequenceLength {
+			for _, b := range rec.Sequence[encoder.MaxSequenceLength:] {
+				if b != 'A' && b != 'C' && b != 'G' && b != 'T' &&
+					b != 'a' && b != 'c' && b != 'g' && b != 't' {
+					return fmt.Errorf("record %d: sequence length %d has ambiguous bases beyond position %d; N-position tracking is limited to %d bp",
+						i, len(rec.Sequence), encoder.MaxSequenceLength, encoder.MaxSequenceLength)
+				}
+			}
+		}
+
 		// Store N positions: count (uint16) + positions (uint16 each)
 		bufs.nPositions = binary.LittleEndian.AppendUint16(bufs.nPositions, uint16(len(bufs.nPosBuf))) //nolint:gosec // bounded
 		for _, pos := range bufs.nPosBuf {
