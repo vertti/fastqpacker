@@ -693,6 +693,5 @@ func TestCompressAllowsLongSequenceWithoutNBeyondLimit(t *testing.T) {
 	lines := strings.SplitN(output, "\n", 3)
 	require.GreaterOrEqual(t, len(lines), 2, "expected at least 2 lines in output")
 	decompSeq := lines[1]
-	assert.Len(t, decompSeq, len(seq), "sequence length mismatch")
-	assert.Equal(t, byte('N'), decompSeq[100], "N at position 100 should be preserved")
+	assert.Equal(t, string(seq), decompSeq, "full sequence round-trip mismatch")
 }
