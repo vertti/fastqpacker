@@ -647,3 +647,51 @@ func BenchmarkCompressParallel(b *testing.B) {
 		})
 	}
 }
+
+func TestCompressRejectsLongSequenceWithNBeyondLimit(t *testing.T) {
+	t.Parallel()
+
+	// Build a sequence of 70000bp: ACGT repeated, with an N at position 66000
+	seq := make([]byte, 70000)
+	for i := range seq {
+		seq[i] = "ACGT"[i%4]
+	}
+	seq[66000] = 'N'
+	qual := bytes.Repeat([]byte{'I'}, 70000)
+
+	input := fmt.Sprintf("@SEQ_LONG\n%s\n+\n%s\n", seq, qual)
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous bases beyond position")
+}
+
+func TestCompressAllowsLongSequenceWithoutNBeyondLimit(t *testing.T) {
+	t.Parallel()
+
+	// Build a sequence of 70000bp: ACGT repeated, with N only at position 100 (within limit)
+	seq := make([]byte, 70000)
+	for i := range seq {
+		seq[i] = "ACGT"[i%4]
+	}
+	seq[100] = 'N'
+	qual := bytes.Repeat([]byte{'I'}, 70000)
+
+	input := fmt.Sprintf("@SEQ_LONG\n%s\n+\n%s\n", seq, qual)
+
+	var compressed bytes.Buffer
+	err := Compress(strings.NewReader(input), &compressed, nil)
+	require.NoError(t, err)
+
+	// Round-trip: decompress and verify the N at position 100 is preserved
+	var decompressed bytes.Buffer
+	err = Decompress(&compressed, &decompressed, nil)
+	require.NoError(t, err)
+
+	output := decompressed.String()
+	lines := strings.SplitN(output, "\n", 3)
+	require.GreaterOrEqual(t, len(lines), 2, "expected at least 2 lines in output")
+	decompSeq := lines[1]
+	assert.Equal(t, string(seq), decompSeq, "full sequence round-trip mismatch")
+}
