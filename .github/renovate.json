@@ -7,7 +7,13 @@
   "packageRules": [
     {
       "groupName": "go toolchain",
-      "matchPackageNames": ["go", "golangci-lint"]
+      "matchPackageNames": ["go", "golangci-lint"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
     }
   ]
 }
