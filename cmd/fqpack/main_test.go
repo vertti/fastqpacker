@@ -70,7 +70,7 @@ func TestOpenInputGzipByMagicBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gzip fixture: %v", err)
 	}
-	if err := os.WriteFile(path, rawGz, 0o600); err != nil {
+	if err := os.WriteFile(path, rawGz, 0o600); err != nil { //nolint:gosec // test fixture path from t.TempDir
 		t.Fatalf("write raw gzip fixture: %v", err)
 	}
 
