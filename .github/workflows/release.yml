@@ -34,7 +34,7 @@ jobs:
         run: sha256sum fqpack-* > checksums.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             fqpack-linux-amd64
